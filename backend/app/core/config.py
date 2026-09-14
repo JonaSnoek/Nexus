@@ -29,7 +29,16 @@ class Settings(BaseSettings):
     FIRST_ADMIN_PASSWORD: str = ""
     FIRST_ADMIN_EMAIL: str = ""
 
+    # Image generation provider (bootstrap values, afterwards configured via
+    # the admin panel and stored in system_settings).
     IMAGE_PROVIDER: str = "none"
+    IMAGE_MODEL: str = "dall-e-3"
+    IMAGE_API_URL: str = "https://api.openai.com/v1"
+    IMAGE_API_KEY: str = ""
+
+    # Directory where generated image files are stored. In Docker this is
+    # backed by the nexus-images-data volume.
+    MEDIA_DIR: str = "/data/media"
 
     class Config:
         env_file = ".env"

@@ -22,6 +22,12 @@ LIMIT_KEYS = [
     "chat_message_cost",
     "image_generation_cost",
 ]
+IMAGE_KEYS = [
+    "image_provider",
+    "image_model",
+    "image_api_url",
+    "image_api_key",
+]
 
 # Action types charged against the monthly quota. The key is the internal
 # action type (see API usage events), the value is the system_settings key
@@ -43,6 +49,10 @@ DEFAULTS = {
     "default_message_limit": "1000",
     "chat_message_cost": "1",
     "image_generation_cost": "10",
+    "image_provider": env_settings.IMAGE_PROVIDER or "none",
+    "image_model": env_settings.IMAGE_MODEL or "",
+    "image_api_url": env_settings.IMAGE_API_URL or "",
+    "image_api_key": env_settings.IMAGE_API_KEY or "",
 }
 
 
@@ -93,6 +103,14 @@ async def bootstrap_settings(db: AsyncSession) -> None:
             value = env_settings.OIDC_CLIENT_SECRET
         elif key == "oidc_redirect_uri":
             value = env_settings.OIDC_REDIRECT_URI
+        elif key == "image_provider":
+            value = env_settings.IMAGE_PROVIDER or "none"
+        elif key == "image_model":
+            value = env_settings.IMAGE_MODEL
+        elif key == "image_api_url":
+            value = env_settings.IMAGE_API_URL
+        elif key == "image_api_key":
+            value = env_settings.IMAGE_API_KEY
         await set_setting(db, key, value)
 
 
@@ -185,3 +203,67 @@ async def apply_limits_update(db: AsyncSession, body: dict) -> dict:
     if body.get("image_generation_cost") is not None:
         await set_setting(db, "image_generation_cost", str(body["image_generation_cost"]))
     return await get_limits_config(db)
+
+
+# ---------------------------------------------------------------------------
+# Image generation provider configuration
+# ---------------------------------------------------------------------------
+
+def _normalize_provider_name(value: Optional[str]) -> str:
+    value = (value or "").strip().lower()
+    return value if value in ("none", "openai_compatible") else "none"
+
+
+async def get_image_provider_settings(db: AsyncSession) -> dict:
+    """Public (safe) provider settings - never returns the raw API key.
+
+    Only a boolean ``has_api_key`` and a masked tail are exposed so the
+    values can never leak to the frontend.
+    """
+    provider = _normalize_provider_name(await get_setting(db, "image_provider", DEFAULTS["image_provider"]))
+    model = (await get_setting(db, "image_model", DEFAULTS["image_model"]) or DEFAULTS["image_model"]) or ""
+    api_url = (await get_setting(db, "image_api_url", DEFAULTS["image_api_url"]) or DEFAULTS["image_api_url"]) or ""
+    api_key = (await get_setting(db, "image_api_key", DEFAULTS["image_api_key"]) or "") or ""
+
+    tail = ""
+    if api_key:
+        tail = api_key[-4:] if len(api_key) >= 4 else "****"
+    return {
+        "image_provider": provider,
+        "image_model": model,
+        "image_api_url": api_url,
+        "has_api_key": bool(api_key),
+        "api_key_tail": tail,
+        "configured": provider == "openai_compatible" and bool(api_url.strip()),
+    }
+
+
+async def get_image_provider_config(db: AsyncSession) -> dict:
+    """Full internal provider config (may contain the API key - backend only)."""
+    public = await get_image_provider_settings(db)
+    api_key = (await get_setting(db, "image_api_key", DEFAULTS["image_api_key"]) or "") or ""
+    return {
+        "image_provider": public["image_provider"],
+        "image_model": public["image_model"],
+        "image_api_url": public["image_api_url"],
+        "image_api_key": api_key,
+        "configured": public["configured"],
+    }
+
+
+async def apply_image_provider_update(db: AsyncSession, body: dict) -> dict:
+    if body.get("image_provider") is not None:
+        await set_setting(db, "image_provider", _normalize_provider_name(body["image_provider"]))
+    if body.get("image_model") is not None:
+        value = str(body["image_model"] or "").strip()
+        await set_setting(db, "image_model", value)
+    if body.get("image_api_url") is not None:
+        value = str(body["image_api_url"] or "").strip()
+        await set_setting(db, "image_api_url", value)
+    if "image_api_key" in body:
+        value = body["image_api_key"]
+        # Empty string clears the key; None keeps the existing one.
+        if value is not None:
+            stripped = str(value).strip()
+            await set_setting(db, "image_api_key", stripped if stripped else None)
+    return await get_image_provider_settings(db)

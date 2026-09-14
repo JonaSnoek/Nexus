@@ -246,6 +246,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                   {user.monthly_message_limit.toLocaleString()} messages left
                 </span>
               </div>
+              {typeof user.images_used_month === "number" &&
+                user.images_used_month > 0 && (
+                  <div className="text-[10px] text-gray-500">
+                    {user.images_used_month.toLocaleString()} Bilder in diesem
+                    Monat generiert
+                  </div>
+                )}
             </div>
           ) : null}
         </div>

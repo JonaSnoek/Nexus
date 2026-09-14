@@ -16,6 +16,7 @@ from app.schemas.system import (
     DefaultLimitsResponse,
     DefaultLimitsUpdate,
 )
+from app.schemas.image import ImageProviderSettingsResponse, ImageProviderSettingsUpdate
 from app.schemas.user import UserLimitsResponse
 from app.providers.ollama import OllamaProvider
 from app.services.settings_service import (
@@ -23,6 +24,8 @@ from app.services.settings_service import (
     apply_sso_update,
     get_limits_config,
     apply_limits_update,
+    get_image_provider_settings,
+    apply_image_provider_update,
 )
 from app.services.user_service import get_user_by_id, usage_view_for_user, CURRENT_PERIOD
 from app.services.audit_service import log_action
@@ -290,6 +293,29 @@ async def update_sso_config(
     return result
 
 
+@router.get("/settings/images", response_model=ImageProviderSettingsResponse)
+async def get_image_config(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    if current_user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only")
+    return await get_image_provider_settings(db)
+
+
+@router.put("/settings/images", response_model=ImageProviderSettingsResponse)
+async def update_image_config(
+    body: ImageProviderSettingsUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    if current_user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only")
+    result = await apply_image_provider_update(db, body.model_dump(exclude_unset=True))
+    await log_action(db, "image_settings_updated", user_id=current_user.id, details="Image provider settings updated")
+    return result
+
+
 @router.get("/settings/limits", response_model=DefaultLimitsResponse)
 async def get_limit_config(
     db: AsyncSession = Depends(get_db),
@@ -428,11 +454,33 @@ async def get_usage_summary(
         select(func.count(UsageEvent.id)).where(UsageEvent.period == period)
     )).scalar()
 
+    # Breakdown by action type (only counts events that survive refunds).
+    total_chat_tokens = (await db.execute(
+        select(func.coalesce(func.sum(UsageEvent.tokens), 0))
+        .where(UsageEvent.period == period, UsageEvent.action_type == "CHAT_MESSAGE")
+    )).scalar()
+    total_image_tokens = (await db.execute(
+        select(func.coalesce(func.sum(UsageEvent.tokens), 0))
+        .where(UsageEvent.period == period, UsageEvent.action_type == "IMAGE_GENERATION")
+    )).scalar()
+    total_chat_actions = (await db.execute(
+        select(func.count(UsageEvent.id))
+        .where(UsageEvent.period == period, UsageEvent.action_type == "CHAT_MESSAGE")
+    )).scalar()
+    total_image_actions = (await db.execute(
+        select(func.count(UsageEvent.id))
+        .where(UsageEvent.period == period, UsageEvent.action_type == "IMAGE_GENERATION")
+    )).scalar()
+
     return {
         "period": period,
         "users": users,
         "total_tokens_used": total_tokens,
         "total_messages": total_messages,
         "total_actions": total_actions,
+        "total_chat_tokens": total_chat_tokens,
+        "total_image_tokens": total_image_tokens,
+        "total_chat_actions": total_chat_actions,
+        "total_image_actions": total_image_actions,
         "default_token_limit": default_token_limit,
     }

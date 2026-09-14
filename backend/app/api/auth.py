@@ -180,5 +180,8 @@ async def get_me(
         "effective_token_limit": usage.get("effective_token_limit"),
         "tokens_remaining": usage.get("tokens_remaining"),
         "used_percent": usage.get("used_percent"),
+        "action_counts": usage.get("action_counts", {}),
+        "images_used_month": usage.get("images_used_month", 0),
+        "chat_messages_count_month": usage.get("chat_messages_count_month", 0),
         "permissions": permissions,
     }

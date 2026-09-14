@@ -1,7 +1,7 @@
 import json
 from datetime import datetime, timezone
 from typing import Optional, List, Dict
-from sqlalchemy import select, func, insert as generic_insert
+from sqlalchemy import select, func, insert as generic_insert, update as sa_update, delete as sa_delete
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
@@ -228,6 +228,32 @@ async def check_token_limit(db: AsyncSession, user: User) -> bool:
     return usage.tokens_used < limit
 
 
+async def refund_user_usage(db: AsyncSession, user: User, event: UsageEvent) -> None:
+    """Atomically reverse a reserved charge after a failed action.
+
+    Used when image generation fails: the quota was reserved before the
+    expensive work started (race condition safety) and is now returned so the
+    user never pays for a failed generation. The reservation UsageEvent row is
+    deleted so no bogus "successful" action stays in the ledger.
+    """
+    if event is None or not event.tokens:
+        return
+    period = event.period or CURRENT_PERIOD()
+    usage_table = Usage.__table__
+    stmt = (
+        sa_update(usage_table)
+        .where(
+            usage_table.c.user_id == user.id,
+            usage_table.c.period == period,
+            usage_table.c.tokens_used >= event.tokens,
+        )
+        .values(tokens_used=usage_table.c.tokens_used - event.tokens)
+    )
+    await db.execute(stmt)
+    await db.execute(sa_delete(UsageEvent).where(UsageEvent.id == event.id))
+    await db.commit()
+
+
 async def check_message_limit(db: AsyncSession, user: User) -> bool:
     usage = await get_or_create_usage(db, user.id)
     return usage.messages_used < user.monthly_message_limit
@@ -246,11 +272,25 @@ async def increment_usage(db: AsyncSession, user_id: int, tokens: int = 0, messa
 # Usage views (shared by /me, user list, admin limits)
 # ---------------------------------------------------------------------------
 
+async def _usage_action_counts(
+    db: AsyncSession,
+    user_id: int,
+    period: str,
+) -> Dict[str, int]:
+    result = await db.execute(
+        select(UsageEvent.action_type, func.count(UsageEvent.id))
+        .where(UsageEvent.user_id == user_id, UsageEvent.period == period)
+        .group_by(UsageEvent.action_type)
+    )
+    return {action: count for action, count in result.all()}
+
+
 async def usage_view_for_user(
     db: AsyncSession,
     user: User,
     default_token_limit: Optional[int] = None,
     usage: Optional[Usage] = None,
+    action_counts: Optional[Dict[str, int]] = None,
 ) -> dict:
     """Assemble the usage/limit view for a single user without side effects."""
     if default_token_limit is None:
@@ -267,6 +307,10 @@ async def usage_view_for_user(
     period = usage.period if usage else CURRENT_PERIOD()
     used = usage.tokens_used if usage else 0
     messages_used = usage.messages_used if usage else 0
+
+    if action_counts is None:
+        action_counts = await _usage_action_counts(db, user.id, period)
+
     effective_limit = await get_effective_token_limit(db, user, default_token_limit)
 
     has_limit = effective_limit is not None
@@ -294,6 +338,11 @@ async def usage_view_for_user(
         "effective_token_limit": effective_limit,
         "tokens_remaining": remaining,
         "used_percent": percent,
+        # Per-action breakdown for the current period (CHAT_MESSAGE,
+        # IMAGE_GENERATION, ...). Extensible for future action types.
+        "action_counts": action_counts,
+        "images_used_month": action_counts.get("IMAGE_GENERATION", 0),
+        "chat_messages_count_month": action_counts.get("CHAT_MESSAGE", 0),
     }
 
 
@@ -314,10 +363,22 @@ async def usage_views_for_users(
     )
     usage_map = {row.user_id: row for row in result.scalars().all()}
 
+    if ids:
+        count_result = await db.execute(
+            select(UsageEvent.user_id, UsageEvent.action_type, func.count(UsageEvent.id))
+            .where(UsageEvent.user_id.in_(ids), UsageEvent.period == period)
+            .group_by(UsageEvent.user_id, UsageEvent.action_type)
+        )
+        counts_map: Dict[int, Dict[str, int]] = {}
+        for uid, action, count in count_result.all():
+            counts_map.setdefault(uid, {})[action] = count
+    else:
+        counts_map = {}
+
     views = {}
     for user in users:
         views[user.id] = await usage_view_for_user(
-            db, user, default_token_limit, usage_map.get(user.id)
+            db, user, default_token_limit, usage_map.get(user.id), counts_map.get(user.id, {})
         )
     return views
 

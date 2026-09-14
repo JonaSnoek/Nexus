@@ -23,6 +23,10 @@ import type {
   DefaultLimits,
   UpdateLimitsRequest,
   UserLimits,
+  GeneratedImage,
+  ImageGenerateRequest,
+  ImageProviderSettings,
+  ImageProviderSettingsUpdate,
 } from "../types";
 
 const API_URL = (import.meta as any).env?.VITE_API_URL || "";
@@ -408,6 +412,65 @@ export async function updateDefaultLimits(
   data: Partial<DefaultLimits>
 ): Promise<DefaultLimits> {
   return request<DefaultLimits>("/api/admin/settings/limits", {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Image generation
+// ---------------------------------------------------------------------------
+
+const imageUrlCache = new Map<string, string>();
+
+export async function generateImage(
+  data: ImageGenerateRequest
+): Promise<GeneratedImage> {
+  return request<GeneratedImage>("/api/images/generate", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function getImageMetadata(
+  imageId: string | number
+): Promise<GeneratedImage> {
+  return request<GeneratedImage>(`/api/images/${imageId}`);
+}
+
+/**
+ * Authenticated image loading. Plain <img> tags cannot send the bearer token,
+ * so the bytes are fetched as a blob once and exposed as an object URL. The
+ * URL is cached per image so repeated renders do not refetch the file.
+ */
+export async function getImageFileUrl(path: string): Promise<string> {
+  if (imageUrlCache.has(path)) return imageUrlCache.get(path)!;
+  const token = getToken();
+  const headers: Record<string, string> = {};
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const response = await fetch(`${API_URL}${path}`, { headers });
+  if (response.status === 401) {
+    clearToken();
+    window.location.href = "/login";
+    throw new Error("Unauthorized");
+  }
+  if (!response.ok) {
+    throw new Error("Das Bild konnte nicht geladen werden.");
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  imageUrlCache.set(path, url);
+  return url;
+}
+
+export async function getImageProviderSettings(): Promise<ImageProviderSettings> {
+  return request<ImageProviderSettings>("/api/admin/settings/images");
+}
+
+export async function updateImageProviderSettings(
+  data: ImageProviderSettingsUpdate
+): Promise<ImageProviderSettings> {
+  return request<ImageProviderSettings>("/api/admin/settings/images", {
     method: "PUT",
     body: JSON.stringify(data),
   });

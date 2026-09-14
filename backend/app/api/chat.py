@@ -15,8 +15,9 @@ from app.services.chat_service import (
     create_chat, get_chat, list_chats, count_chats, update_chat, delete_chat,
     add_message, get_messages, get_message, delete_message, delete_messages_after,
 )
-from app.services.user_service import check_message_limit, spend_user_usage, increment_usage, LimitExceededError
-from app.services.settings_service import get_cost_for_action
+from app.services.user_service import check_message_limit, increment_usage
+from app.services.quota_service import reserve_action
+from app.services.image_service import serialize_image
 from app.services.audit_service import log_action
 from app.providers.ollama import OllamaProvider
 
@@ -26,51 +27,6 @@ provider = OllamaProvider()
 
 def _estimate_tokens(text: str) -> int:
     return max(1, len(text.split()) + len(text) // 4)
-
-
-_ACTION_LABELS = {
-    "CHAT_MESSAGE": "diese Nachricht",
-    "IMAGE_GENERATION": "diese Bildgenerierung",
-}
-
-
-def _build_limit_error(action_type: str, cost: int, limit, used: int) -> dict:
-    remaining = max(limit - used, 0) if limit is not None else None
-    label = _ACTION_LABELS.get(action_type, "diese Aktion")
-    if remaining is not None and remaining < cost:
-        message = (
-            f"Für {label} werden {cost} Tokens benötigt. "
-            f"Dir stehen nur noch {remaining} Tokens zur Verfügung."
-        )
-    else:
-        message = (
-            f"Dein monatliches Token-Limit ist erreicht. "
-            f"Verbraucht: {used} / {limit} Tokens. "
-            f"Bitte wende dich an einen Administrator."
-        )
-    return {
-        "error_code": "LIMIT_REACHED",
-        "action_type": action_type,
-        "cost": cost,
-        "monthly_limit": limit,
-        "used": used,
-        "remaining": remaining,
-        "message": message,
-    }
-
-
-async def _reserve_action(db, user, action_type: str, metadata: Optional[dict] = None):
-    """Server-side quota enforcement. The LLM is only called after the quota
-    for the action was atomically reserved; the charge always happens before
-    any expensive work and can never be bypassed from the client."""
-    cost = await get_cost_for_action(db, action_type)
-    try:
-        return await spend_user_usage(db, user, action_type, cost, metadata)
-    except LimitExceededError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=_build_limit_error(exc.action_type, exc.cost, exc.limit, exc.used),
-        )
 
 
 @router.get("/", response_model=ChatListResponse)
@@ -129,6 +85,8 @@ async def get_chat_detail(
             content=m.content,
             tokens=m.tokens or 0,
             created_at=m.created_at,
+            image_id=m.image_id,
+            image=serialize_image(m.image) if m.image is not None else None,
         )
         for m in chat.messages
     ]
@@ -193,7 +151,7 @@ async def send_message(
     model = body.model or settings.NEXUS_LLM_MODEL
 
     # Enforce + reserve the monthly quota BEFORE talking to the LLM.
-    await _reserve_action(
+    await reserve_action(
         db, current_user, "CHAT_MESSAGE",
         metadata={"source": "chat_message", "estimated_tokens": user_tokens, "model": model},
     )
@@ -244,13 +202,19 @@ async def regenerate_message(
     if role_val != "assistant":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Can only regenerate assistant messages")
 
+    if getattr(message, "image_id", None):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Bildnachrichten können nicht regeneriert werden. Generiere das Bild einfach erneut.",
+        )
+
     if not await check_message_limit(db, current_user):
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Monthly message limit reached")
 
     model = body.model or settings.NEXUS_LLM_MODEL
 
     # Enforce + reserve the monthly quota BEFORE regenerating.
-    await _reserve_action(
+    await reserve_action(
         db, current_user, "CHAT_MESSAGE",
         metadata={"source": "regenerate", "model": model},
     )

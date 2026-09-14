@@ -1,10 +1,11 @@
 import { useState, useEffect } from "react";
-import { BarChart3, RefreshCw } from "lucide-react";
-import { getDashboard } from "../../lib/api";
-import type { DashboardStats } from "../../types";
+import { BarChart3, RefreshCw, MessageSquare, Image as ImageIcon, Zap, Activity } from "lucide-react";
+import { getDashboard, getUsageSummary } from "../../lib/api";
+import type { DashboardStats, UsageSummary } from "../../types";
 
 export default function UsageSection() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
+  const [summary, setSummary] = useState<UsageSummary | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -14,8 +15,9 @@ export default function UsageSection() {
   async function loadStats() {
     setLoading(true);
     try {
-      const data = await getDashboard();
+      const [data, usage] = await Promise.all([getDashboard(), getUsageSummary()]);
       setStats(data);
+      setSummary(usage);
     } catch {
       // ignore
     } finally {
@@ -52,6 +54,70 @@ export default function UsageSection() {
           Refresh
         </button>
       </div>
+
+      {!loading && summary && (
+        <div className="mb-6 rounded-xl border border-nexus-border bg-nexus-surface p-6">
+          <div className="mb-4 flex items-center justify-between">
+            <h3 className="text-sm font-medium text-gray-200">
+              Verbrauch im aktuellen Monat ({summary.period})
+            </h3>
+            <span className="text-xs text-gray-500">
+              Limit:{" "}
+              {summary.default_token_limit?.toLocaleString() ?? "-"} Token /
+              Monat
+            </span>
+          </div>
+          <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
+            <div className="rounded-lg bg-nexus-elevated/60 p-3">
+              <p className="flex items-center gap-1 text-xs text-gray-500">
+                <Zap size={12} className="text-blue-400" /> Gesamt-Tokens
+              </p>
+              <p className="mt-1 text-lg font-semibold text-gray-100">
+                {formatNumber(summary.total_tokens_used ?? 0)}
+              </p>
+            </div>
+            <div className="rounded-lg bg-nexus-elevated/60 p-3">
+              <p className="flex items-center gap-1 text-xs text-gray-500">
+                <MessageSquare size={12} className="text-blue-400" />{" "}
+                Chat-Tokens
+              </p>
+              <p className="mt-1 text-lg font-semibold text-gray-100">
+                {formatNumber(summary.total_chat_tokens ?? 0)}
+              </p>
+            </div>
+            <div className="rounded-lg bg-nexus-elevated/60 p-3">
+              <p className="flex items-center gap-1 text-xs text-gray-500">
+                <ImageIcon size={12} className="text-purple-400" /> Bild-Tokens
+              </p>
+              <p className="mt-1 text-lg font-semibold text-gray-100">
+                {formatNumber(summary.total_image_tokens ?? 0)}
+              </p>
+            </div>
+            <div className="rounded-lg bg-nexus-elevated/60 p-3">
+              <p className="flex items-center gap-1 text-xs text-gray-500">
+                <Activity size={12} className="text-gray-400" /> Chat-Aktionen
+              </p>
+              <p className="mt-1 text-lg font-semibold text-gray-100">
+                {formatNumber(summary.total_chat_actions ?? 0)}
+              </p>
+            </div>
+            <div className="rounded-lg bg-nexus-elevated/60 p-3">
+              <p className="flex items-center gap-1 text-xs text-gray-500">
+                <ImageIcon size={12} className="text-purple-400" />{" "}
+                Bild-Aktionen
+              </p>
+              <p className="mt-1 text-lg font-semibold text-gray-100">
+                {formatNumber(summary.total_image_actions ?? 0)}
+              </p>
+            </div>
+          </div>
+          <p className="mt-4 text-[11px] text-gray-500">
+            Erfasst werden nur erfolgreich gebuchte Aktionen –
+            fehlgeschlagene Bildgenerierungen werden im Backend automatisch
+            erstattet und tauchen hier nicht auf.
+          </p>
+        </div>
+      )}
 
       {loading && !stats ? (
         <div className="flex justify-center py-16">

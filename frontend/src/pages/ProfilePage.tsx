@@ -3,7 +3,7 @@ import Layout from "../components/Layout";
 import { useAuth } from "../contexts/AuthContext";
 import { getMyUsage } from "../lib/api";
 import type { Usage } from "../types";
-import { User, MessageSquare, Zap, Activity } from "lucide-react";
+import { User, MessageSquare, Zap, Activity, Image as ImageIcon } from "lucide-react";
 
 export default function ProfilePage() {
   const { user } = useAuth();
@@ -94,14 +94,20 @@ export default function ProfilePage() {
                   {tokensRemainingLabel}
                 </p>
               </div>
-              <div>
-                <p className="text-xs text-gray-500">Messages remaining</p>
-                <p className="text-sm font-medium text-gray-300">
-                  {formatNumber(user?.messages_remaining_month || 0)}
-                </p>
+<div>
+                  <p className="text-xs text-gray-500">Messages remaining</p>
+                  <p className="text-sm font-medium text-gray-300">
+                    {formatNumber(user?.messages_remaining_month || 0)}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">Bilder generiert (Monat)</p>
+                  <p className="text-sm font-medium text-gray-300">
+                    {user?.images_used_month || 0}
+                  </p>
+                </div>
               </div>
             </div>
-          </div>
 
           {/* Usage stats */}
           <div className="rounded-xl border border-nexus-border bg-nexus-surface p-6">
@@ -164,6 +170,55 @@ export default function ProfilePage() {
                     />
                   </div>
                 </div>
+
+                <div>
+                  <div className="mb-2 flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-sm text-gray-300">
+                      <ImageIcon size={14} className="text-purple-400" />
+                      Bilder generiert
+                    </div>
+                    <span className="text-xs text-gray-500">
+                      {user?.images_used_month || 0} (Monat)
+                    </span>
+                  </div>
+                </div>
+
+                {user?.action_counts &&
+                  Object.keys(user.action_counts).length > 0 && (
+                    <div>
+                      <div className="mb-2 flex items-center justify-between">
+                        <div className="text-sm text-gray-300">
+                          Aktionen (Monat)
+                        </div>
+                        <span className="text-xs text-gray-500">
+                          {Object.values(user.action_counts).reduce(
+                            (a, b) => a + b,
+                            0
+                          )}{" "}
+                          gesamt
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {Object.entries(user.action_counts).map(
+                          ([action, count]) => (
+                            <span
+                              key={action}
+                              className="inline-flex items-center gap-1 rounded-full bg-nexus-elevated px-2 py-0.5 text-[11px] text-gray-400"
+                            >
+                              {action === "IMAGE_GENERATION"
+                                ? "Bildgenerierungen"
+                                : action === "CHAT_MESSAGE"
+                                  ? "Chat-Nachrichten"
+                                  : action}
+                              <span className="font-medium text-gray-200">
+                                {count}
+                              </span>
+                            </span>
+                          )
+                        )}
+                      </div>
+                    </div>
+                  )}
 
                 <div className="flex items-center gap-2 border-t border-nexus-border pt-4 text-xs text-gray-500">
                   <Activity size={14} />

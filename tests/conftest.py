@@ -36,6 +36,9 @@ os.environ["FIRST_ADMIN_USERNAME"] = ""
 os.environ["FIRST_ADMIN_PASSWORD"] = ""
 os.environ["FIRST_ADMIN_EMAIL"] = ""
 
+TEST_MEDIA_DIR = Path(tempfile.gettempdir()) / "nexus_test_media"
+os.environ["MEDIA_DIR"] = str(TEST_MEDIA_DIR)
+
 # ---------------------------------------------------------------------------
 # Application imports (safe now that the environment is configured).
 # ---------------------------------------------------------------------------
@@ -198,3 +201,11 @@ async def auth_headers(client, admin_user, regular_user):
     admin = await _login(client, "admin", "admin123")
     user = await _login(client, "user1", "password123")
     return {"admin": admin, "user": user}
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _cleanup_media_dir():
+    yield
+    import shutil
+    if TEST_MEDIA_DIR.exists():
+        shutil.rmtree(TEST_MEDIA_DIR, ignore_errors=True)

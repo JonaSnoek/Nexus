@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime, timezone
 from sqlalchemy import (
-    Column, Integer, String, Text, Boolean, DateTime, ForeignKey, Enum, UniqueConstraint
+    Column, Integer, String, Text, Boolean, DateTime, Float, ForeignKey, Enum, UniqueConstraint
 )
 from sqlalchemy.orm import relationship
 from app.core.database import Base
@@ -47,6 +47,7 @@ class User(Base):
     chats = relationship("Chat", back_populates="user", cascade="all, delete-orphan")
     usage_records = relationship("Usage", back_populates="user", cascade="all, delete-orphan")
     usage_events = relationship("UsageEvent", back_populates="user", cascade="all, delete-orphan")
+    generated_images = relationship("GeneratedImage", back_populates="user", cascade="all, delete-orphan")
     audit_logs = relationship("AuditLog", back_populates="user")
 
 
@@ -126,6 +127,7 @@ class Chat(Base):
 
     user = relationship("User", back_populates="chats")
     messages = relationship("Message", back_populates="chat", cascade="all, delete-orphan", order_by="Message.created_at")
+    images = relationship("GeneratedImage", back_populates="chat", cascade="all, delete-orphan")
 
 
 class Message(Base):
@@ -136,9 +138,44 @@ class Message(Base):
     role = Column(Enum(MessageRole), nullable=False)
     content = Column(Text, nullable=False)
     tokens = Column(Integer, default=0)
+    image_id = Column(Integer, ForeignKey("generated_images.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     chat = relationship("Chat", back_populates="messages")
+    image = relationship("GeneratedImage", back_populates="message")
+
+
+class GeneratedImage(Base):
+    """A generated image that is permanently tied to a user and a chat.
+
+    The actual bytes live on disk under the media directory; only the
+    provider/model/prompt metadata and the file path are stored here. The
+    assistant message that displays the image references this row via
+    ``messages.image_id``.
+    """
+
+    __tablename__ = "generated_images"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    chat_id = Column(Integer, ForeignKey("chats.id", ondelete="CASCADE"), nullable=True)
+    prompt = Column(Text, nullable=False)
+    provider = Column(String(100), nullable=True)
+    model = Column(String(200), nullable=True)
+    status = Column(String(20), nullable=False, default="done")
+    image_path = Column(String(500), nullable=True)
+    width = Column(Integer, nullable=True)
+    height = Column(Integer, nullable=True)
+    bytes_size = Column(Integer, nullable=True)
+    seconds = Column(Float, nullable=True)
+    token_cost = Column(Integer, nullable=False, default=0)
+    period = Column(String(7), nullable=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    user = relationship("User", back_populates="generated_images")
+    chat = relationship("Chat", back_populates="images")
+    message = relationship("Message", back_populates="image", uselist=False)
 
 
 class AuditLog(Base):

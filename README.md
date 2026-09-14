@@ -248,7 +248,11 @@ Copy `.env.example` to `.env` and adjust what you need. All variables are read a
 | `NEXUS_PORT` | Port NEXUS is configured to listen on for local development. | `3000` |
 | `OLLAMA_URL` | Base URL of the Ollama API from the backend container's perspective. | `http://ollama:11434` |
 | `NEXUS_LLM_MODEL` | Default LLM model used for chat. See [LLM Configuration](#llm-configuration). | `qwen3:8b` |
-| `IMAGE_PROVIDER` | Image generation backend architecture (`none` for now; providers plug in here). | `none` |
+| `IMAGE_PROVIDER` | Image generation provider (`none` = disabled, `openai_compatible` = OpenAI-kompatible API, e.g. DALL-E or a self-hosted endpoint). Bootstrap default only — configure at runtime via **Admin → Settings → Bildgenerierung**. | `none` |
+| `IMAGE_MODEL` | Model used for image generation (e.g. `dall-e-3`). | `dall-e-3` |
+| `IMAGE_API_URL` | Base URL of the OpenAI-compatible image API. | `https://api.openai.com/v1` |
+| `IMAGE_API_KEY` | API key for the image provider. Stored in the database; never returned to the frontend. | *(empty)* |
+| `MEDIA_DIR` | Filesystem directory for generated images inside the backend container. Mounted as a Docker volume. | `/data/media` |
 | `FIRST_ADMIN_USERNAME` | Username of the admin account created on first boot. | *(empty — set at install)* |
 | `FIRST_ADMIN_PASSWORD` | Password for that admin account. You can also use the `/api/auth/setup` endpoint instead. | *(empty)* |
 | `FIRST_ADMIN_EMAIL` | Email address for that admin account. | *(empty)* |
@@ -456,6 +460,45 @@ LLM memory usage is roughly the parameter count scaled by the quantization preci
 
 ---
 
+## Image Generation
+
+NEXUS supports AI image generation through an OpenAI-compatible provider (e.g. DALL-E, or a self-hosted image API that exposes `/v1/images/generations`).
+
+### 1. Enable the provider
+
+In the admin panel go to **Settings → Bildgenerierung**, select a provider (`OpenAI-kompatibel`), enter the API URL and API key, and save. No container restart is required — settings are read from the database on every request.
+
+Alternatively, set the bootstrap values in `.env` (before the first start) and refine them at runtime via the admin UI:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `IMAGE_PROVIDER` | `none` or `openai_compatible` | `none` |
+| `IMAGE_MODEL` | Model name sent to the provider | `dall-e-3` |
+| `IMAGE_API_URL` | Base URL of the image API | `https://api.openai.com/v1` |
+| `IMAGE_API_KEY` | Secret key (stored in DB, never returned to the frontend) | *(empty)* |
+
+### 2. Grant the permission
+
+Users need the **`image.generate`** permission to see the image button and send image prompts. Admins automatically have all permissions. For regular users, open **Admin → Users → the user → Permissions** and enable `image.generate`.
+
+### 3. How it works
+
+When a user sends an image prompt:
+
+1. The backend checks the monthly quota (token cost is `image_generation_cost`, default **10**).
+2. If the check passes, tokens are reserved **atomically** (race-condition safe).
+3. The OpenAI-compatible provider is called synchronously.
+4. On success the PNG is saved under the media volume and an assistant message with the image is added to the chat.
+5. On failure the reserved tokens are **refunded** automatically — no false usage is recorded.
+
+The generated image is permanently linked to the owning user and the chat it was created in. Images can be downloaded from the chat or served by the `/api/images/{id}/file` endpoint (owner or admin only).
+
+### Docker volume
+
+Generated images are stored on disk under `MEDIA_DIR` (default `/data/media`) inside the backend container. The compose file mounts a named volume `nexus-images-data` at that path so images survive container restarts and updates.
+
+---
+
 ## Backup & Restore
 
 ### Backup
@@ -659,6 +702,18 @@ curl -N -X POST http://localhost/api/chat/1/messages \
   -d '{"content": "Hello NEXUS"}'
 ```
 
+Assistant messages referencing a generated image carry `image_id` plus a nested `image` object (URL, width/height, model, generation time).
+
+### Images
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/images/generate` | Generate an image from a prompt (`{"prompt": "..."}`); requires `image.generate`. Costs `image_generation_cost` tokens. |
+| `GET` | `/api/images/{id}` | Image metadata (owner or admin) |
+| `GET` | `/api/images/{id}/file` | The PNG file (owner or admin) |
+
+Generation is synchronous: the backend reserves tokens atomically (limit checks are race-safe), calls the configured provider, stores the image under the media volume, adds an assistant message to the chat — or refunds the tokens if the provider fails. A 429 signals the monthly quota is exhausted; a 503 means no provider is configured.
+
 ### Users (admin)
 
 | Method | Endpoint | Description |
@@ -692,6 +747,8 @@ curl -N -X POST http://localhost/api/chat/1/messages \
 | `GET` | `/api/admin/models/status` | Ollama health + default model presence |
 | `GET` | `/api/admin/settings/limits` | Default limits and action costs (token/message limit, chat/image cost) |
 | `PUT` | `/api/admin/settings/limits` | Update the default limits and action costs |
+| `GET` | `/api/admin/settings/images` | Image provider settings (API key is masked) |
+| `PUT` | `/api/admin/settings/images` | Update image provider settings |
 | `GET` | `/api/admin/users/{id}/limits` | Limit state + current-period usage for one user |
 | `GET` | `/api/admin/usage/summary` | Per-user quota summary for the current month |
 

@@ -3,7 +3,7 @@ from typing import Optional, List
 from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models.user import Chat, Message, MessageRole
+from app.models.user import Chat, Message, MessageRole, GeneratedImage
 
 
 async def create_chat(db: AsyncSession, user_id: int, title: str = "New Chat") -> Chat:
@@ -17,7 +17,10 @@ async def create_chat(db: AsyncSession, user_id: int, title: str = "New Chat") -
 async def get_chat(db: AsyncSession, chat_id: int, user_id: int) -> Optional[Chat]:
     result = await db.execute(
         select(Chat)
-        .options(selectinload(Chat.messages))
+        .options(
+            selectinload(Chat.messages).selectinload(Message.image),
+            selectinload(Chat.images),
+        )
         .where(Chat.id == chat_id, Chat.user_id == user_id)
     )
     return result.scalar_one_or_none()
@@ -59,12 +62,14 @@ async def add_message(
     role: str,
     content: str,
     tokens: int = 0,
+    image_id: Optional[int] = None,
 ) -> Message:
     message = Message(
         chat_id=chat_id,
         role=MessageRole(role),
         content=content,
         tokens=tokens,
+        image_id=image_id,
     )
     db.add(message)
     chat_result = await db.execute(select(Chat).where(Chat.id == chat_id))

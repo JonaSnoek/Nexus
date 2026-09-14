@@ -1,12 +1,14 @@
 import { useState, useEffect } from "react";
-import { Save, AlertCircle, Check, KeyRound, Gauge, Loader2 } from "lucide-react";
+import { Save, AlertCircle, Check, KeyRound, Gauge, Loader2, Image as ImageIcon } from "lucide-react";
 import {
   getSsoSettings,
   updateSsoSettings,
   getDefaultLimits,
   updateDefaultLimits,
+  getImageProviderSettings,
+  updateImageProviderSettings,
 } from "../../lib/api";
-import type { SsoSettings, DefaultLimits } from "../../types";
+import type { SsoSettings, DefaultLimits, ImageProviderSettings, ImageProviderSettingsUpdate } from "../../types";
 
 const emptySso: SsoSettings = {
   oidc_enabled: false,
@@ -29,8 +31,20 @@ export default function SettingsSection() {
   const [loading, setLoading] = useState(true);
   const [ssoSaving, setSsoSaving] = useState(false);
   const [limitsSaving, setLimitsSaving] = useState(false);
+  const [imageSaving, setImageSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+
+  const [image, setImage] = useState<ImageProviderSettings>({
+    image_provider: "none",
+    image_model: "",
+    image_api_url: "",
+    has_api_key: false,
+    api_key_tail: "",
+    configured: false,
+  });
+  const [newApiKey, setNewApiKey] = useState("");
+  const [clearKey, setClearKey] = useState(false);
 
   useEffect(() => {
     loadSettings();
@@ -40,12 +54,16 @@ export default function SettingsSection() {
     setLoading(true);
     setError(null);
     try {
-      const [ssoData, limitsData] = await Promise.all([
+      const [ssoData, limitsData, imageData] = await Promise.all([
         getSsoSettings(),
         getDefaultLimits(),
+        getImageProviderSettings(),
       ]);
       setSso(ssoData);
       setLimits(limitsData);
+      setImage(imageData);
+      setNewApiKey("");
+      setClearKey(false);
     } catch (err: any) {
       setError(err.message || "Failed to load settings");
     } finally {
@@ -85,6 +103,33 @@ export default function SettingsSection() {
       setError(err.message || "Failed to save default limits");
     } finally {
       setLimitsSaving(false);
+    }
+  }
+
+  async function handleSaveImage(e: React.FormEvent) {
+    e.preventDefault();
+    setImageSaving(true);
+    setError(null);
+    try {
+      const payload: ImageProviderSettingsUpdate = {
+        image_provider: image.image_provider,
+        image_model: image.image_model,
+        image_api_url: image.image_api_url,
+      };
+      if (clearKey) {
+        payload.image_api_key = "";
+      } else if (newApiKey.trim()) {
+        payload.image_api_key = newApiKey.trim();
+      }
+      const updated = await updateImageProviderSettings(payload);
+      setImage(updated);
+      setNewApiKey("");
+      setClearKey(false);
+      notify("Image provider settings saved");
+    } catch (err: any) {
+      setError(err.message || "Failed to save image provider settings");
+    } finally {
+      setImageSaving(false);
     }
   }
 
@@ -371,6 +416,134 @@ export default function SettingsSection() {
                 <Save size={14} />
               )}
               Save Default Limits
+            </button>
+          </div>
+        </form>
+
+        {/* Image generation provider */}
+        <form
+          onSubmit={handleSaveImage}
+          className="rounded-xl border border-nexus-border bg-nexus-surface p-6"
+        >
+          <div className="mb-5 flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-purple-500/10 text-purple-400">
+              <ImageIcon size={18} />
+            </div>
+            <div>
+              <h3 className="text-sm font-medium text-gray-100">
+                Bildgenerierung (Provider)
+              </h3>
+              <p className="text-xs text-gray-500">
+                Konfiguriert den Bildprovider für die Image-Generierung.
+                Getestet mit OpenAI-kompatiblen APIs (z. B. DALL-E, selbst
+                gehostete Backends). Der API-Key wird nie an das Frontend
+                ausgegeben.
+              </p>
+            </div>
+            <div className="ml-auto">
+              {image.configured ? (
+                <span className="inline-flex items-center gap-1 rounded-full bg-green-500/10 px-2 py-0.5 text-[11px] font-medium text-green-400">
+                  <Check size={12} /> Konfiguriert
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 rounded-full bg-yellow-500/10 px-2 py-0.5 text-[11px] font-medium text-yellow-300">
+                  <AlertCircle size={12} /> Nicht konfiguriert
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-xs text-gray-400">
+                Provider
+              </label>
+              <select
+                value={image.image_provider}
+                onChange={(e) =>
+                  setImage((p) => ({
+                    ...p,
+                    image_provider: e.target.value,
+                  }))
+                }
+                className={inputClass}
+              >
+                <option value="none">Keiner (deaktiviert)</option>
+                <option value="openai_compatible">
+                  OpenAI-kompatibel (z. B. DALL-E)
+                </option>
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-gray-400">
+                Modell
+              </label>
+              <input
+                type="text"
+                value={image.image_model}
+                onChange={(e) =>
+                  setImage((p) => ({ ...p, image_model: e.target.value }))
+                }
+                placeholder="dall-e-3"
+                className={inputClass}
+              />
+            </div>
+            <div className="sm:col-span-2">
+              <label className="mb-1 block text-xs text-gray-400">
+                API-URL (Basis, z. B. https://api.openai.com/v1)
+              </label>
+              <input
+                type="url"
+                value={image.image_api_url}
+                onChange={(e) =>
+                  setImage((p) => ({ ...p, image_api_url: e.target.value }))
+                }
+                placeholder="https://api.openai.com/v1"
+                className={inputClass}
+              />
+            </div>
+            <div className="sm:col-span-2">
+              <label className="mb-1 block text-xs text-gray-400">
+                API-Key {image.has_api_key && "(aktuell hinterlegt …" + image.api_key_tail + ")"}
+              </label>
+              <input
+                type="password"
+                value={newApiKey}
+                disabled={clearKey}
+                onChange={(e) => setNewApiKey(e.target.value)}
+                placeholder={
+                  image.has_api_key
+                    ? "Neuen Key eingeben, um den bestehenden zu ersetzen (leer = behalten)"
+                    : "API-Key eingeben"
+                }
+                className={inputClass}
+              />
+              {image.has_api_key && !clearKey && (
+                <label className="mt-2 flex items-center gap-2 text-xs text-gray-400">
+                  <input
+                    type="checkbox"
+                    checked={clearKey}
+                    onChange={(e) => setClearKey(e.target.checked)}
+                    className="h-4 w-4 rounded border-gray-600 bg-nexus-elevated"
+                  />
+                  Bestehenden API-Key löschen
+                </label>
+              )}
+            </div>
+          </div>
+
+          <div className="mt-5 flex justify-end">
+            <button
+              type="submit"
+              disabled={imageSaving}
+              className="flex items-center gap-2 rounded-lg bg-blue-500 px-4 py-2 text-xs font-medium text-white transition-colors hover:bg-blue-600 disabled:opacity-50"
+            >
+              {imageSaving ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <Save size={14} />
+              )}
+              Save Image Provider
             </button>
           </div>
         </form>

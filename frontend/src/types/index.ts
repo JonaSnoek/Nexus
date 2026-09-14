@@ -21,6 +21,9 @@ export interface User {
   tokens_remaining?: number | null;
   used_percent?: number | null;
   permissions: string[];
+  action_counts?: Record<string, number>;
+  images_used_month?: number;
+  chat_messages_count_month?: number;
   created_at?: string;
   last_login?: string | null;
 }
@@ -71,6 +74,10 @@ export interface UsageSummary {
   total_tokens_used: number;
   total_messages: number;
   total_actions: number;
+  total_chat_tokens?: number;
+  total_image_tokens?: number;
+  total_chat_actions?: number;
+  total_image_actions?: number;
   default_token_limit: number;
 }
 
@@ -104,6 +111,50 @@ export interface Message {
   content: string;
   tokens: number;
   created_at: string;
+  image_id?: number | null;
+  image?: GeneratedImage | null;
+}
+
+export interface GeneratedImage {
+  id: number;
+  user_id: number;
+  chat_id: number | null;
+  status: string;
+  prompt: string;
+  provider: string | null;
+  model: string | null;
+  width: number | null;
+  height: number | null;
+  bytes_size: number | null;
+  seconds: number | null;
+  token_cost: number;
+  period: string | null;
+  error: string | null;
+  created_at: string | null;
+  url: string;
+}
+
+export interface ImageGenerateRequest {
+  prompt: string;
+  chat_id?: number | null;
+  model?: string | null;
+  size?: string | null;
+}
+
+export interface ImageProviderSettings {
+  image_provider: string;
+  image_model: string;
+  image_api_url: string;
+  has_api_key: boolean;
+  api_key_tail: string;
+  configured: boolean;
+}
+
+export interface ImageProviderSettingsUpdate {
+  image_provider?: string | null;
+  image_model?: string | null;
+  image_api_url?: string | null;
+  image_api_key?: string | null;
 }
 
 export interface Usage {

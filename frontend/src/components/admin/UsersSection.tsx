@@ -585,6 +585,9 @@ export default function UsersSection() {
                 <th className="hidden px-4 py-3 text-xs font-medium text-gray-400 xl:table-cell">
                   Nachrichten
                 </th>
+                <th className="hidden px-4 py-3 text-xs font-medium text-gray-400 xl:table-cell">
+                  Bilder
+                </th>
                 <th className="px-4 py-3 text-xs font-medium text-gray-400">
                   Actions
                 </th>
@@ -715,6 +718,9 @@ export default function UsersSection() {
                       {(user.monthly_message_limit ?? 0).toLocaleString()} /{" "}
                       {(user.messages_remaining_month ?? 0).toLocaleString()}{" "}
                       übrig
+                    </td>
+                    <td className="hidden px-4 py-3 text-xs text-gray-500 xl:table-cell">
+                      {user.images_used_month ?? 0} generiert
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-1">

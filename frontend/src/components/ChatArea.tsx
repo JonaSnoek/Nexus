@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { Send, Square, Sparkles, StopCircle, AlertCircle, AlertTriangle } from "lucide-react";
+import { Send, Square, Sparkles, StopCircle, AlertCircle, AlertTriangle, ImagePlus, Image as ImageIcon, Loader2 } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 import type { Message, ChatResponse } from "../types";
-import { getChat, sendMessageStream, createChat, updateChat } from "../lib/api";
+import { getChat, sendMessageStream, createChat, updateChat, generateImage } from "../lib/api";
 import MessageContent from "./MessageContent";
+import ChatImage from "./ChatImage";
 
 interface ChatAreaProps {
   chatId: string | null;
@@ -20,6 +21,9 @@ export default function ChatArea({ chatId, onChatCreated }: ChatAreaProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [errorKind, setErrorKind] = useState<"error" | "limit">("error");
+  const [mode, setMode] = useState<"chat" | "image">("chat");
+  const [imageGenerating, setImageGenerating] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const streamingContentRef = useRef("");
@@ -31,6 +35,19 @@ export default function ChatArea({ chatId, onChatCreated }: ChatAreaProps) {
   useEffect(() => {
     scrollToBottom();
   }, [messages, scrollToBottom]);
+
+  useEffect(() => {
+    if (!imageGenerating) {
+      setElapsed(0);
+      return;
+    }
+    const started = Date.now();
+    const timer = setInterval(
+      () => setElapsed(Math.floor((Date.now() - started) / 1000)),
+      250
+    );
+    return () => clearInterval(timer);
+  }, [imageGenerating]);
 
   useEffect(() => {
     if (chatId) {
@@ -65,7 +82,12 @@ export default function ChatArea({ chatId, onChatCreated }: ChatAreaProps) {
 
   async function handleSend() {
     const content = input.trim();
-    if (!content || streaming) return;
+    if (!content || streaming || imageGenerating) return;
+
+    if (mode === "image") {
+      await handleImageSend(content);
+      return;
+    }
 
     if (!chatId) {
       try {
@@ -159,6 +181,54 @@ export default function ChatArea({ chatId, onChatCreated }: ChatAreaProps) {
     }
   }
 
+  async function handleImageSend(prompt: string) {
+    setInput("");
+    setError(null);
+    setErrorKind("error");
+
+    async function run(targetChatId: string) {
+      setImageGenerating(true);
+      try {
+        const image = await generateImage({
+          prompt,
+          chat_id: targetChatId ? Number(targetChatId) : null,
+        });
+        // Refresh the chat so the persisted image message appears.
+        const chatData: ChatResponse = await getChat(targetChatId);
+        if (chatData.messages?.length > 0) {
+          setMessages(chatData.messages);
+        }
+        return Boolean(image);
+      } catch (err: any) {
+        if (err.message !== "Unauthorized") {
+          setError(err.message || "Bildgenerierung fehlgeschlagen");
+          setErrorKind(
+            typeof err.message === "string" && err.message.includes("Limit")
+              ? "limit"
+              : "error"
+          );
+        }
+        return false;
+      } finally {
+        setImageGenerating(false);
+      }
+    }
+
+    if (!chatId) {
+      try {
+        const newChat = await createChat();
+        onChatCreated?.(String(newChat.id));
+        navigate(`/chat/${newChat.id}`, { replace: true });
+        setTimeout(() => run(String(newChat.id)), 100);
+      } catch (err: any) {
+        setError(err.message || "Chat konnte nicht erstellt werden");
+      }
+      return;
+    }
+
+    await run(chatId);
+  }
+
   function adjustTextarea() {
     const el = textareaRef.current;
     if (!el) return;
@@ -215,7 +285,10 @@ export default function ChatArea({ chatId, onChatCreated }: ChatAreaProps) {
                     }`}
                   >
                     {msg.role === "assistant" ? (
-                      <MessageContent content={msg.content} />
+                      <div>
+                        <MessageContent content={msg.content} />
+                        {msg.image ? <ChatImage image={msg.image} /> : null}
+                      </div>
                     ) : (
                       <div className="whitespace-pre-wrap text-sm leading-relaxed">
                         {msg.content}
@@ -266,17 +339,44 @@ export default function ChatArea({ chatId, onChatCreated }: ChatAreaProps) {
       <div className="border-t border-nexus-border bg-[#0a0a0a] p-4">
         <div className="mx-auto max-w-3xl">
           <div className="flex items-end gap-2 rounded-2xl border border-nexus-border bg-nexus-surface p-2">
+            {canGenerateImage && (
+              <button
+                onClick={() => setMode(mode === "image" ? "chat" : "image")}
+                title={mode === "image" ? "Zurück zum Chat-Modus" : "Bild generieren (Image-Modus)"}
+                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition-colors ${
+                  mode === "image"
+                    ? "bg-purple-500/20 text-purple-300"
+                    : "text-gray-400 hover:bg-nexus-elevated hover:text-gray-200"
+                }`}
+              >
+                <ImagePlus size={16} />
+              </button>
+            )}
+            {mode === "image" && (
+              <span className="flex h-9 shrink-0 items-center rounded-lg bg-purple-500/10 px-2 text-[11px] font-medium text-purple-300">
+                Bild
+              </span>
+            )}
             <textarea
               ref={textareaRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Type a message..."
+              placeholder={
+                mode === "image"
+                  ? "Beschreibe das Bild, das NEXUS generieren soll…"
+                  : "Type a message..."
+              }
               rows={1}
               className="max-h-[200px] min-h-[40px] flex-1 resize-none bg-transparent px-2 py-2 text-sm text-gray-100 placeholder-gray-500 outline-none"
             />
             <div className="flex items-center gap-1">
-              {streaming ? (
+              {imageGenerating ? (
+                <div className="flex items-center gap-2 px-1 text-xs text-gray-400">
+                  <Loader2 size={14} className="animate-spin" />
+                  <span>{elapsed}s</span>
+                </div>
+              ) : streaming ? (
                 <button
                   onClick={() => setStreaming(false)}
                   title="Stop generating"
@@ -290,13 +390,14 @@ export default function ChatArea({ chatId, onChatCreated }: ChatAreaProps) {
                   disabled={!input.trim()}
                   className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-500 text-white transition-colors hover:bg-blue-600 disabled:opacity-30 disabled:hover:bg-blue-500"
                 >
-                  <Send size={14} />
+                  {mode === "image" ? <ImageIcon size={14} /> : <Send size={14} />}
                 </button>
               )}
             </div>
           </div>
-          <div className="mt-2 text-center text-[11px] text-gray-600">
-            NEXUS AI Assistant
+          <div className="mt-2 flex items-center justify-center gap-3 text-center text-[11px] text-gray-600">
+            <span>{mode === "image" ? "NEXUS Bildgenerierung" : "NEXUS AI Assistant"}</span>
+            {imageGenerating && <span className="text-gray-500">Bild wird generiert…</span>}
           </div>
         </div>
       </div>

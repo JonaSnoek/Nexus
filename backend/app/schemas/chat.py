@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Optional, List
 from pydantic import BaseModel
+from app.schemas.image import GeneratedImageResponse
 
 
 class ChatCreate(BaseModel):
@@ -17,6 +18,8 @@ class MessageResponse(BaseModel):
     content: str
     tokens: int
     created_at: datetime
+    image_id: Optional[int] = None
+    image: Optional[GeneratedImageResponse] = None
 
     class Config:
         from_attributes = True
