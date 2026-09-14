@@ -119,7 +119,7 @@ async def test_send_message_to_nonexistent_chat(client, user_headers):
 async def test_token_limit_enforced(client, user_headers, db_session):
     chat_id = await _create_chat(client, user_headers, "Token Limits")
     user = await get_user_by_username(db_session, "user1")
-    user.daily_token_limit = 0
+    user.monthly_token_limit = 0
     await db_session.commit()
 
     response = await client.post(
@@ -134,7 +134,7 @@ async def test_token_limit_enforced(client, user_headers, db_session):
 async def test_message_limit_enforced(client, user_headers, db_session):
     chat_id = await _create_chat(client, user_headers, "Message Limits")
     user = await get_user_by_username(db_session, "user1")
-    user.daily_message_limit = 0
+    user.monthly_message_limit = 0
     await db_session.commit()
 
     response = await client.post(

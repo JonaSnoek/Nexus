@@ -21,9 +21,13 @@ async def lifespan(app: FastAPI):
     from sqlalchemy import select
     from app.core.database import async_session
     from app.models.user import User
+    from app.services.settings_service import bootstrap_settings, get_default_limits
 
-    if settings.FIRST_ADMIN_USERNAME and settings.FIRST_ADMIN_PASSWORD:
-        async with async_session() as session:
+    async with async_session() as session:
+        await bootstrap_settings(session)
+        defaults = await get_default_limits(session)
+
+        if settings.FIRST_ADMIN_USERNAME and settings.FIRST_ADMIN_PASSWORD:
             result = await session.execute(select(User).where(User.username == settings.FIRST_ADMIN_USERNAME))
             existing = result.scalar_one_or_none()
             if existing is None:
@@ -34,6 +38,8 @@ async def lifespan(app: FastAPI):
                     email=settings.FIRST_ADMIN_EMAIL or None,
                     display_name=settings.FIRST_ADMIN_USERNAME,
                     role="ADMIN",
+                    monthly_token_limit=defaults["default_token_limit"],
+                    monthly_message_limit=defaults["default_message_limit"],
                 )
                 session.add(admin)
                 await session.commit()

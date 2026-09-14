@@ -6,8 +6,13 @@ export interface User {
   role: "admin" | "user";
   is_active: boolean;
   is_sso: boolean;
-  daily_token_limit: number;
-  daily_message_limit: number;
+  monthly_token_limit: number;
+  monthly_message_limit: number;
+  period: string;
+  tokens_used_month: number;
+  messages_used_month: number;
+  tokens_remaining_month: number;
+  messages_remaining_month: number;
   permissions: string[];
   created_at?: string;
   last_login?: string | null;
@@ -36,7 +41,7 @@ export interface Message {
 }
 
 export interface Usage {
-  date: string;
+  period: string;
   tokens_used: number;
   messages_used: number;
   token_limit?: number;
@@ -101,6 +106,8 @@ export interface UserCreate {
   email?: string;
   password: string;
   role: string;
+  monthly_token_limit?: number;
+  monthly_message_limit?: number;
 }
 
 export interface UserUpdate {
@@ -108,6 +115,21 @@ export interface UserUpdate {
   email?: string;
   role?: string;
   is_active?: boolean;
+}
+
+export interface SsoSettings {
+  oidc_enabled: boolean;
+  oidc_issuer_url: string;
+  oidc_client_id: string;
+  oidc_client_secret: string;
+  oidc_redirect_uri: string;
+  oidc_group_admins: string;
+  oidc_group_users: string;
+}
+
+export interface DefaultLimits {
+  default_token_limit: number;
+  default_message_limit: number;
 }
 
 export interface DashboardStats {

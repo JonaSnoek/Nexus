@@ -1,11 +1,11 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy import text, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.core.config import settings
 from app.core.database import get_db
 from app.schemas.system import HealthResponse
 from app.providers.ollama import OllamaProvider
 from app.models.user import User
+from app.services.settings_service import sso_enabled
 
 router = APIRouter(prefix="/api", tags=["health"])
 provider = OllamaProvider()
@@ -26,6 +26,11 @@ async def health(db: AsyncSession = Depends(get_db)):
     result = await provider.healthcheck()
     ollama_status = result["status"]
 
+    try:
+        oidc_on = await sso_enabled(db)
+    except Exception:
+        oidc_on = False
+
     overall = "ok"
     if db_status != "ok" or ollama_status != "ok":
         overall = "degraded"
@@ -35,5 +40,5 @@ async def health(db: AsyncSession = Depends(get_db)):
         database=db_status,
         ollama=ollama_status,
         setup_required=setup_required,
-        oidc_enabled=settings.OIDC_ENABLED,
+        oidc_enabled=oidc_on,
     )

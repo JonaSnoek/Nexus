@@ -19,3 +19,33 @@ class SystemInfoResponse(BaseModel):
     disk_used: Optional[int] = None
     disk_percent: Optional[float] = None
     uptime: Optional[float] = None
+
+
+class SsoSettingsResponse(BaseModel):
+    oidc_enabled: bool
+    oidc_issuer_url: str
+    oidc_client_id: str
+    oidc_client_secret: str
+    oidc_redirect_uri: str
+    oidc_group_admins: str
+    oidc_group_users: str
+
+
+class SsoSettingsUpdate(BaseModel):
+    oidc_enabled: Optional[bool] = None
+    oidc_issuer_url: Optional[str] = None
+    oidc_client_id: Optional[str] = None
+    oidc_client_secret: Optional[str] = None
+    oidc_redirect_uri: Optional[str] = None
+    oidc_group_admins: Optional[str] = None
+    oidc_group_users: Optional[str] = None
+
+
+class DefaultLimitsResponse(BaseModel):
+    default_token_limit: int
+    default_message_limit: int
+
+
+class DefaultLimitsUpdate(BaseModel):
+    default_token_limit: Optional[int] = None
+    default_message_limit: Optional[int] = None

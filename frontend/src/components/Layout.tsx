@@ -181,6 +181,57 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           )}
         </div>
 
+        {/* Token usage widget */}
+        <div className="border-t border-nexus-border p-3">
+          {user ? (
+            <div className="rounded-lg bg-nexus-elevated/60 p-3">
+              <div className="mb-1.5 flex items-center justify-between">
+                <span className="text-[10px] font-medium uppercase tracking-wider text-gray-500">
+                  Tokens · {user.period}
+                </span>
+                <span className="text-xs text-gray-400">monthly</span>
+              </div>
+              <div className="flex items-end justify-between">
+                <span className="text-sm font-semibold text-gray-100">
+                  {user.tokens_remaining_month.toLocaleString()}
+                </span>
+                <span className="text-[10px] text-gray-500">
+                  of {user.monthly_token_limit.toLocaleString()} left
+                </span>
+              </div>
+              <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-nexus-surface">
+                <div
+                  className={`h-full rounded-full transition-all ${
+                    user.tokens_remaining_month <= 0
+                      ? "bg-red-500"
+                      : user.tokens_remaining_month <
+                          user.monthly_token_limit * 0.2
+                        ? "bg-yellow-500"
+                        : "bg-blue-500"
+                  }`}
+                  style={{
+                    width: `${
+                      user.monthly_token_limit > 0
+                        ? Math.min(
+                            100,
+                            (user.tokens_used_month / user.monthly_token_limit) *
+                              100
+                          )
+                        : 100
+                    }%`,
+                  }}
+                />
+              </div>
+              <div className="mt-1.5 flex items-center justify-between text-[10px] text-gray-500">
+                <span>
+                  {user.messages_remaining_month.toLocaleString()} of{" "}
+                  {user.monthly_message_limit.toLocaleString()} messages left
+                </span>
+              </div>
+            </div>
+          ) : null}
+        </div>
+
         {/* Bottom nav */}
         <div className="border-t border-nexus-border p-3 space-y-1">
           <button

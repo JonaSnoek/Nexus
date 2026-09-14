@@ -8,7 +8,7 @@ import {
   Check,
   Search,
 } from "lucide-react";
-import { getUsers, createUser, updateUser, deleteUser } from "../../lib/api";
+import { getUsers, createUser, updateUser, deleteUser, updateUserLimits } from "../../lib/api";
 import type { User, UserCreate, UserUpdate } from "../../types";
 
 export default function UsersSection() {
@@ -29,7 +29,10 @@ export default function UsersSection() {
     role: "user",
   });
 
-  const [editForm, setEditForm] = useState<Partial<UserUpdate>>({});
+  const [editForm, setEditForm] = useState<Partial<UserUpdate> & {
+    monthly_token_limit?: number;
+    monthly_message_limit?: number;
+  }>({});
 
   useEffect(() => {
     loadUsers();
@@ -75,6 +78,8 @@ export default function UsersSection() {
       email: user.email || undefined,
       role: user.role,
       is_active: user.is_active,
+      monthly_token_limit: user.monthly_token_limit,
+      monthly_message_limit: user.monthly_message_limit,
     });
     setError(null);
   }
@@ -88,6 +93,19 @@ export default function UsersSection() {
       setUsers((prev) =>
         prev.map((u) => (u.id === updated.id ? updated : u))
       );
+      if (
+        editForm.monthly_token_limit !== undefined ||
+        editForm.monthly_message_limit !== undefined
+      ) {
+        await updateUserLimits(String(editingUser.id), {
+          monthly_token_limit:
+            editForm.monthly_token_limit ?? editingUser.monthly_token_limit,
+          monthly_message_limit:
+            editForm.monthly_message_limit ?? editingUser.monthly_message_limit,
+        });
+        const fresh = await getUsers();
+        setUsers(fresh);
+      }
       setEditingUser(null);
       setSuccess("User updated successfully");
       setTimeout(() => setSuccess(null), 3000);
@@ -259,6 +277,46 @@ export default function UsersSection() {
                   <option value="admin">Admin</option>
                 </select>
               </div>
+              <div>
+                <label className="mb-1 block text-xs text-gray-400">
+                  Token limit / month (optional)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  placeholder="Default"
+                  value={createForm.monthly_token_limit ?? ""}
+                  onChange={(e) =>
+                    setCreateForm((p) => ({
+                      ...p,
+                      monthly_token_limit: e.target.value
+                        ? Number(e.target.value)
+                        : undefined,
+                    }))
+                  }
+                  className="w-full rounded-lg border border-nexus-border bg-nexus-elevated px-3 py-2 text-sm text-gray-100 outline-none focus:border-blue-500/50"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-gray-400">
+                  Message limit / month (optional)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  placeholder="Default"
+                  value={createForm.monthly_message_limit ?? ""}
+                  onChange={(e) =>
+                    setCreateForm((p) => ({
+                      ...p,
+                      monthly_message_limit: e.target.value
+                        ? Number(e.target.value)
+                        : undefined,
+                    }))
+                  }
+                  className="w-full rounded-lg border border-nexus-border bg-nexus-elevated px-3 py-2 text-sm text-gray-100 outline-none focus:border-blue-500/50"
+                />
+              </div>
               <div className="flex justify-end gap-2 pt-2">
                 <button
                   type="button"
@@ -342,6 +400,46 @@ export default function UsersSection() {
                   <option value="admin">Admin</option>
                 </select>
               </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="mb-1 block text-xs text-gray-400">
+                    Token limit / month
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={editForm.monthly_token_limit ?? ""}
+                    onChange={(e) =>
+                      setEditForm((p) => ({
+                        ...p,
+                        monthly_token_limit: e.target.value
+                          ? Number(e.target.value)
+                          : undefined,
+                      }))
+                    }
+                    className="w-full rounded-lg border border-nexus-border bg-nexus-elevated px-3 py-2 text-sm text-gray-100 outline-none focus:border-blue-500/50"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs text-gray-400">
+                    Message limit / month
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={editForm.monthly_message_limit ?? ""}
+                    onChange={(e) =>
+                      setEditForm((p) => ({
+                        ...p,
+                        monthly_message_limit: e.target.value
+                          ? Number(e.target.value)
+                          : undefined,
+                      }))
+                    }
+                    className="w-full rounded-lg border border-nexus-border bg-nexus-elevated px-3 py-2 text-sm text-gray-100 outline-none focus:border-blue-500/50"
+                  />
+                </div>
+              </div>
               <div className="flex items-center gap-2">
                 <input
                   type="checkbox"
@@ -404,6 +502,9 @@ export default function UsersSection() {
                   Status
                 </th>
                 <th className="hidden px-4 py-3 text-xs font-medium text-gray-400 lg:table-cell">
+                  Tokens / month
+                </th>
+                <th className="hidden px-4 py-3 text-xs font-medium text-gray-400 xl:table-cell">
                   Last Login
                 </th>
                 <th className="px-4 py-3 text-xs font-medium text-gray-400">
@@ -454,6 +555,9 @@ export default function UsersSection() {
                     </span>
                   </td>
                   <td className="hidden px-4 py-3 text-xs text-gray-500 lg:table-cell">
+                    {user.monthly_token_limit.toLocaleString()}
+                  </td>
+                  <td className="hidden px-4 py-3 text-xs text-gray-500 xl:table-cell">
                     {user.last_login
                       ? new Date(user.last_login).toLocaleDateString()
                       : "Never"}

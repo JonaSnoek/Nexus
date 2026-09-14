@@ -7,7 +7,8 @@ from app.core.database import get_db
 from app.core.security import create_access_token, verify_password, get_password_hash, get_current_active_user
 from app.models.user import User, UserRole, UserPermission, Permission
 from app.schemas.auth import LoginRequest, TokenResponse, SetupRequest
-from app.services.user_service import create_user, get_user_by_username
+from app.services.user_service import create_user, get_user_by_username, get_monthly_summary
+from app.services.settings_service import get_sso_settings, sso_enabled
 from app.services.audit_service import log_action
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -59,35 +60,37 @@ async def setup(body: SetupRequest, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/oidc/authorize")
-async def oidc_authorize():
-    if not settings.OIDC_ENABLED:
+async def oidc_authorize(db: AsyncSession = Depends(get_db)):
+    sso = await get_sso_settings(db)
+    if not sso["oidc_enabled"]:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OIDC not configured")
     import urllib.parse
     params = urllib.parse.urlencode({
-        "client_id": settings.OIDC_CLIENT_ID,
-        "redirect_uri": settings.OIDC_REDIRECT_URI,
+        "client_id": sso["oidc_client_id"],
+        "redirect_uri": sso["oidc_redirect_uri"],
         "response_type": "code",
         "scope": "openid profile email",
     })
     from fastapi.responses import RedirectResponse
-    return RedirectResponse(url=f"{settings.OIDC_ISSUER_URL}/protocol/openid-connect/auth?{params}")
+    return RedirectResponse(url=f"{sso['oidc_issuer_url']}/protocol/openid-connect/auth?{params}")
 
 
 @router.get("/oidc/callback")
 async def oidc_callback(code: str, db: AsyncSession = Depends(get_db)):
-    if not settings.OIDC_ENABLED:
+    sso = await get_sso_settings(db)
+    if not sso["oidc_enabled"]:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OIDC not configured")
 
     import httpx
     async with httpx.AsyncClient() as client:
         token_resp = await client.post(
-            f"{settings.OIDC_ISSUER_URL}/protocol/openid-connect/token",
+            f"{sso['oidc_issuer_url']}/protocol/openid-connect/token",
             data={
                 "grant_type": "authorization_code",
                 "code": code,
-                "redirect_uri": settings.OIDC_REDIRECT_URI,
-                "client_id": settings.OIDC_CLIENT_ID,
-                "client_secret": settings.OIDC_CLIENT_SECRET,
+                "redirect_uri": sso["oidc_redirect_uri"],
+                "client_id": sso["oidc_client_id"],
+                "client_secret": sso["oidc_client_secret"],
             },
         )
         if token_resp.status_code != 200:
@@ -95,7 +98,7 @@ async def oidc_callback(code: str, db: AsyncSession = Depends(get_db)):
         token_data = token_resp.json()
 
         userinfo_resp = await client.get(
-            f"{settings.OIDC_ISSUER_URL}/protocol/openid-connect/userinfo",
+            f"{sso['oidc_issuer_url']}/protocol/openid-connect/userinfo",
             headers={"Authorization": f"Bearer {token_data['access_token']}"},
         )
         if userinfo_resp.status_code != 200:
@@ -116,7 +119,7 @@ async def oidc_callback(code: str, db: AsyncSession = Depends(get_db)):
         await db.commit()
     else:
         groups = userinfo.get("groups", [])
-        role = "ADMIN" if settings.OIDC_GROUP_ADMINS in groups else "USER"
+        role = "ADMIN" if sso["oidc_group_admins"] in groups else "USER"
         user = await create_user(
             db,
             username=username,
@@ -153,6 +156,8 @@ async def get_me(
         all_perms = await db.execute(select(Permission.name))
         permissions = list(set(permissions) | set(all_perms.scalars().all()))
 
+    usage = await get_monthly_summary(db, current_user)
+
     return {
         "id": current_user.id,
         "username": current_user.username,
@@ -161,7 +166,12 @@ async def get_me(
         "role": _normalize_role(current_user),
         "is_active": current_user.is_active,
         "is_sso": current_user.is_sso,
-        "daily_token_limit": current_user.daily_token_limit,
-        "daily_message_limit": current_user.daily_message_limit,
+        "monthly_token_limit": current_user.monthly_token_limit,
+        "monthly_message_limit": current_user.monthly_message_limit,
+        "period": usage["period"],
+        "tokens_used_month": usage["tokens_used_month"],
+        "messages_used_month": usage["messages_used_month"],
+        "tokens_remaining_month": usage["tokens_remaining_month"],
+        "messages_remaining_month": usage["messages_remaining_month"],
         "permissions": permissions,
     }

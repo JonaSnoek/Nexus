@@ -38,8 +38,8 @@ def _serialize_user(user: User) -> dict:
         "is_sso": user.is_sso,
         "created_at": user.created_at,
         "last_login": user.last_login,
-        "daily_token_limit": user.daily_token_limit,
-        "daily_message_limit": user.daily_message_limit,
+        "monthly_token_limit": user.monthly_token_limit,
+        "monthly_message_limit": user.monthly_message_limit,
     }
 
 
@@ -90,6 +90,8 @@ async def create_new_user(
         email=body.email,
         display_name=body.display_name,
         role=_normalize_role(body.role or "USER"),
+        monthly_token_limit=body.monthly_token_limit,
+        monthly_message_limit=body.monthly_message_limit,
     )
     await log_action(db, "user_created", user_id=current_user.id, details=f"Created user {body.username}")
     return _serialize_user(user)
@@ -192,7 +194,10 @@ async def get_user_usage(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
     result = await db.execute(
-        select(Usage).where(Usage.user_id == user_id).order_by(Usage.date.desc()).limit(30)
+        select(Usage).where(Usage.user_id == user_id).order_by(Usage.period.desc()).limit(24)
     )
     usage_records = result.scalars().all()
-    return [UsageResponse(date=u.date, tokens_used=u.tokens_used, messages_used=u.messages_used) for u in usage_records]
+    return [
+        UsageResponse(period=u.period, tokens_used=u.tokens_used, messages_used=u.messages_used)
+        for u in usage_records
+    ]

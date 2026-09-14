@@ -7,6 +7,7 @@ import PermissionsSection from "../components/admin/PermissionsSection";
 import UsageSection from "../components/admin/UsageSection";
 import ModelsSection from "../components/admin/ModelsSection";
 import SystemSection from "../components/admin/SystemSection";
+import SettingsSection from "../components/admin/SettingsSection";
 import LogsSection from "../components/admin/LogsSection";
 
 const sections: Record<string, React.FC> = {
@@ -16,6 +17,7 @@ const sections: Record<string, React.FC> = {
   usage: UsageSection,
   models: ModelsSection,
   system: SystemSection,
+  settings: SettingsSection,
   logs: LogsSection,
 };
 

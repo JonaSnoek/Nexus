@@ -17,6 +17,8 @@ import type {
   UserCreate,
   UserUpdate,
   Permission,
+  SsoSettings,
+  DefaultLimits,
 } from "../types";
 
 const API_URL = (import.meta as any).env?.VITE_API_URL || "";
@@ -142,7 +144,7 @@ export async function updateUserPermissions(
 
 export async function updateUserLimits(
   userId: string | number,
-  data: { daily_token_limit: number; daily_message_limit: number }
+  data: { monthly_token_limit: number; monthly_message_limit: number }
 ): Promise<void> {
   return request<void>(`/api/users/${userId}/limits`, {
     method: "PUT",
@@ -328,14 +330,37 @@ export async function getSetupStatus(): Promise<{
 
 export async function getMyUsage(): Promise<Usage> {
   const me = await getMe();
-  const usage = await getUserUsage(String(me.id));
-  const today = new Date().toISOString().slice(0, 10);
-  const todayUsage = usage.find((u) => u.date === today);
   return {
-    date: today,
-    tokens_used: todayUsage?.tokens_used || 0,
-    messages_used: todayUsage?.messages_used || 0,
-    token_limit: me.daily_token_limit,
-    message_limit: me.daily_message_limit,
+    period: me.period,
+    tokens_used: me.tokens_used_month,
+    messages_used: me.messages_used_month,
+    token_limit: me.monthly_token_limit,
+    message_limit: me.monthly_message_limit,
   };
+}
+
+export async function getSsoSettings(): Promise<SsoSettings> {
+  return request<SsoSettings>("/api/admin/settings/sso");
+}
+
+export async function updateSsoSettings(
+  data: Partial<SsoSettings>
+): Promise<SsoSettings> {
+  return request<SsoSettings>("/api/admin/settings/sso", {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function getDefaultLimits(): Promise<DefaultLimits> {
+  return request<DefaultLimits>("/api/admin/settings/limits");
+}
+
+export async function updateDefaultLimits(
+  data: Partial<DefaultLimits>
+): Promise<DefaultLimits> {
+  return request<DefaultLimits>("/api/admin/settings/limits", {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
 }

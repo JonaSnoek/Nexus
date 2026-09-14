@@ -9,8 +9,21 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import get_current_active_user
 from app.models.user import User, UserRole, AuditLog, Chat, Message
-from app.schemas.system import SystemInfoResponse
+from app.schemas.system import (
+    SystemInfoResponse,
+    SsoSettingsResponse,
+    SsoSettingsUpdate,
+    DefaultLimitsResponse,
+    DefaultLimitsUpdate,
+)
 from app.providers.ollama import OllamaProvider
+from app.services.settings_service import (
+    get_sso_settings,
+    apply_sso_update,
+    get_default_limits,
+    apply_limits_update,
+)
+from app.services.audit_service import log_action
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 provider = OllamaProvider()
@@ -250,3 +263,49 @@ async def model_status(current_user: User = Depends(get_current_active_user)):
         }
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Ollama unavailable: {str(e)}")
+
+
+@router.get("/settings/sso", response_model=SsoSettingsResponse)
+async def get_sso_config(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    if current_user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only")
+    return await get_sso_settings(db)
+
+
+@router.put("/settings/sso", response_model=SsoSettingsResponse)
+async def update_sso_config(
+    body: SsoSettingsUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    if current_user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only")
+    result = await apply_sso_update(db, body.model_dump(exclude_unset=True))
+    await log_action(db, "sso_settings_updated", user_id=current_user.id, details="SSO/OIDC settings updated")
+    return result
+
+
+@router.get("/settings/limits", response_model=DefaultLimitsResponse)
+async def get_limit_config(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    if current_user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only")
+    return await get_default_limits(db)
+
+
+@router.put("/settings/limits", response_model=DefaultLimitsResponse)
+async def update_limit_config(
+    body: DefaultLimitsUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    if current_user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only")
+    result = await apply_limits_update(db, body.model_dump(exclude_unset=True))
+    await log_action(db, "limits_settings_updated", user_id=current_user.id, details="Default limits updated")
+    return result

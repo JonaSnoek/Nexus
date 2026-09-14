@@ -31,8 +31,8 @@ class User(Base):
     is_sso = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     last_login = Column(DateTime(timezone=True), nullable=True)
-    daily_token_limit = Column(Integer, default=100000, nullable=False)
-    daily_message_limit = Column(Integer, default=500, nullable=False)
+    monthly_token_limit = Column(Integer, default=100000, nullable=False)
+    monthly_message_limit = Column(Integer, default=1000, nullable=False)
 
     permissions = relationship("UserPermission", back_populates="user", cascade="all, delete-orphan")
     chats = relationship("Chat", back_populates="user", cascade="all, delete-orphan")
@@ -64,15 +64,24 @@ class UserPermission(Base):
 
 class Usage(Base):
     __tablename__ = "usage"
-    __table_args__ = (UniqueConstraint("user_id", "date"),)
+    __table_args__ = (UniqueConstraint("user_id", "period"),)
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    date = Column(String(10), nullable=False)
+    period = Column(String(7), nullable=False)
     tokens_used = Column(Integer, default=0, nullable=False)
     messages_used = Column(Integer, default=0, nullable=False)
 
     user = relationship("User", back_populates="usage_records")
+
+
+class SystemSetting(Base):
+    __tablename__ = "system_settings"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    key = Column(String(100), unique=True, nullable=False)
+    value = Column(Text, nullable=True)
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class Chat(Base):

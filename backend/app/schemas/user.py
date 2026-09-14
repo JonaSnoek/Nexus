@@ -9,6 +9,8 @@ class UserCreate(BaseModel):
     email: Optional[str] = None
     display_name: Optional[str] = None
     role: str = "USER"
+    monthly_token_limit: Optional[int] = None
+    monthly_message_limit: Optional[int] = None
 
 
 class UserUpdate(BaseModel):
@@ -28,8 +30,8 @@ class UserResponse(BaseModel):
     is_sso: bool
     created_at: datetime
     last_login: Optional[datetime] = None
-    daily_token_limit: int
-    daily_message_limit: int
+    monthly_token_limit: int
+    monthly_message_limit: int
 
     class Config:
         from_attributes = True
@@ -50,9 +52,19 @@ class PermissionResponse(BaseModel):
 
 
 class UsageResponse(BaseModel):
-    date: str
+    period: str
     tokens_used: int
     messages_used: int
+
+
+class MonthlyUsageResponse(BaseModel):
+    period: str
+    tokens_used_month: int
+    messages_used_month: int
+    monthly_token_limit: int
+    monthly_message_limit: int
+    tokens_remaining_month: int
+    messages_remaining_month: int
 
 
 class UpdatePermissionsRequest(BaseModel):
@@ -60,5 +72,5 @@ class UpdatePermissionsRequest(BaseModel):
 
 
 class UpdateLimitsRequest(BaseModel):
-    daily_token_limit: Optional[int] = None
-    daily_message_limit: Optional[int] = None
+    monthly_token_limit: Optional[int] = None
+    monthly_message_limit: Optional[int] = None

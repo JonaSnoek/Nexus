@@ -70,15 +70,27 @@ export default function ProfilePage() {
                 <p className="text-sm capitalize text-gray-300">{user?.role}</p>
               </div>
               <div>
-                <p className="text-xs text-gray-500">Token Limit (daily)</p>
+                <p className="text-xs text-gray-500">Token Limit (monthly)</p>
                 <p className="text-sm text-gray-300">
-                  {formatNumber(user?.daily_token_limit || 0)}
+                  {formatNumber(user?.monthly_token_limit || 0)}
                 </p>
               </div>
               <div>
-                <p className="text-xs text-gray-500">Message Limit (daily)</p>
+                <p className="text-xs text-gray-500">Message Limit (monthly)</p>
                 <p className="text-sm text-gray-300">
-                  {user?.daily_message_limit || 0}
+                  {formatNumber(user?.monthly_message_limit || 0)}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500">Tokens remaining</p>
+                <p className="text-sm font-medium text-gray-300">
+                  {formatNumber(user?.tokens_remaining_month || 0)}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500">Messages remaining</p>
+                <p className="text-sm font-medium text-gray-300">
+                  {formatNumber(user?.messages_remaining_month || 0)}
                 </p>
               </div>
             </div>
@@ -86,9 +98,12 @@ export default function ProfilePage() {
 
           {/* Usage stats */}
           <div className="rounded-xl border border-nexus-border bg-nexus-surface p-6">
-            <h3 className="mb-4 text-sm font-medium text-gray-200">
-              Today&apos;s Usage
+            <h3 className="mb-1 text-sm font-medium text-gray-200">
+              This Month&apos;s Usage
             </h3>
+            <p className="mb-4 text-xs text-gray-500">
+              Period: {usage?.period || user?.period || "-"}
+            </p>
 
             {loading ? (
               <div className="flex justify-center py-8">
@@ -137,7 +152,7 @@ export default function ProfilePage() {
 
                 <div className="flex items-center gap-2 border-t border-nexus-border pt-4 text-xs text-gray-500">
                   <Activity size={14} />
-                  Date: {usage.date || "-"}
+                  Period: {usage?.period || "-"}
                 </div>
               </div>
             ) : (

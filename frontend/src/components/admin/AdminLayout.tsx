@@ -6,6 +6,7 @@ import {
   Cpu,
   Server,
   ScrollText,
+  Settings,
 } from "lucide-react";
 
 const navItems = [
@@ -14,6 +15,7 @@ const navItems = [
   { id: "permissions", label: "Permissions", icon: Shield },
   { id: "usage", label: "Usage", icon: BarChart3 },
   { id: "models", label: "Models", icon: Cpu },
+  { id: "settings", label: "Settings", icon: Settings },
   { id: "system", label: "System", icon: Server },
   { id: "logs", label: "Logs", icon: ScrollText },
 ];
