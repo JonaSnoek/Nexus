@@ -1,0 +1,33 @@
+# NEXUS - Caddyfile (production, with automatic HTTPS)
+# Replace nexus.example.com with your real domain.
+# Copy this file to docker/Caddyfile when you have a domain; keep the default
+# docker/Caddyfile when running on a bare IP/port (HTTP only).
+
+{
+    admin off
+    log {
+        output stdout
+        level INFO
+    }
+}
+
+nexus.example.com {
+    encode gzip
+
+    @api path /api/*
+    handle @api {
+        reverse_proxy nexus-backend:8000 {
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    handle {
+        reverse_proxy nexus-frontend:80 {
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+}

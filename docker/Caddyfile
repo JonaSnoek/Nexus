@@ -1,0 +1,30 @@
+{
+    admin off
+    log {
+        output stdout
+        level INFO
+    }
+}
+
+:80 {
+    @api path /api/*
+    handle @api {
+        reverse_proxy nexus-backend:8000 {
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    handle {
+        reverse_proxy nexus-frontend:80 {
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    handle_errors {
+        respond "Service unavailable" 503
+    }
+}

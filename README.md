@@ -1,0 +1,793 @@
+# NEXUS - Self-Hosted AI Assistant
+
+NEXUS is a modern, self-hosted AI assistant platform designed to run entirely on your own hardware. It combines a local LLM backend (Ollama) with a polished web interface, complete user management, single sign-on, an admin dashboard, and an image-generation architecture — all packaged for Docker-based deployment.
+
+```
+┌───────────────────────────────────────────────────────────────┐
+│  NEXUS                                                         │
+│  Self-hosted, private, and fully under your control.            │
+│  Your data never leaves your infrastructure.                    │
+└───────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Features
+
+- **Local AI chat with streaming** — token-by-token streaming responses powered by [Ollama](https://ollama.com). No third-party API calls, no data leaving your machine.
+- **User management with roles and permissions** — create users, assign granular permissions, activate/deactivate accounts, and inspect per-user usage.
+- **SSO via OpenID Connect (OIDC)** — drop-in integration with self-hosted identity providers such as [Authentik](https://goauthentik.io/), Keycloak, and any OIDC-compatible provider.
+- **Admin dashboard with system monitoring** — live counts of users, chats, messages, and token usage, plus CPU/memory/disk/uptime reporting and Ollama model management.
+- **Token and message limits per user** — daily quotas enforced at the API layer prevent resource exhaustion and keep your LLM responsive.
+- **Audit logging** — every sensitive action (logins, user creation, permission changes, chat deletion) is recorded with actor, IP, and timestamp.
+- **Responsive dark-themed UI** — a fast, keyboard-friendly React frontend styled for long chat sessions.
+- **Docker-based deployment** — every service ships as a container; one `docker compose up` brings the whole stack online.
+- **Automated installation** — a single `install.sh` script checks prerequisites, installs Docker, generates secrets, pulls your model, and health-checks the result.
+
+---
+
+## Requirements
+
+| Requirement | Minimum | Recommended |
+|-------------|---------|-------------|
+| OS          | Linux x86_64 | Linux x86_64 (Ubuntu 22.04 / Debian 12 / Fedora 39) |
+| RAM         | 4 GB | 16 GB |
+| CPU         | 2 cores | 8 cores |
+| Disk        | 10 GB free | 50 GB+ free (LLM models are large) |
+| Docker      | 20.10+ | Latest stable |
+| Docker Compose | v2 (plugin) | v2 (plugin) |
+| GPU (optional) | — | NVIDIA GPU with CUDA for accelerated inference |
+
+> On Windows/macOS you can still run NEXUS with Docker Desktop for development, but the automated installer and the recommended production path target **Linux x86_64**. For NVIDIA GPU acceleration you must also install the `nvidia-container-toolkit` (see [LLM Configuration](#llm-configuration)).
+
+---
+
+## Quick Installation
+
+```bash
+git clone https://github.com/your-org/nexus.git
+cd nexus
+sudo ./install.sh
+```
+
+The installer is **idempotent** — it is safe to run it again. It will:
+
+1. Verify you are root on a Linux x86_64 host.
+2. Install Docker and the Docker Compose plugin if missing.
+3. Create `.env` from `.env.example` and generate strong secrets for the JWT signing key and PostgreSQL password.
+4. Prompt for the initial admin password (or leave blank to set it later in `.env`).
+5. Pull and build all images, start PostgreSQL, wait for it to become healthy, then start the backend.
+6. Pull your configured LLM model into Ollama (this can take several minutes for large models).
+7. Start everything and run a health check against `http://localhost/api/health`.
+
+When finished you will see a summary like:
+
+```
+  URL:         http://localhost
+  Admin User:  admin
+  Logs:        docker compose logs -f
+  Backup:      bash backup.sh
+```
+
+---
+
+## Manual Installation
+
+If you prefer to run the steps yourself, or you are on a machine that already has Docker configured:
+
+1. **Clone the repository**
+
+   ```bash
+   git clone https://github.com/your-org/nexus.git
+   cd nexus
+   ```
+
+2. **Create and edit the environment file**
+
+   ```bash
+   cp .env.example .env
+   ```
+
+   Edit `.env` and, at minimum, set:
+
+   - The JWT signing secret (a long random string used to sign tokens).
+   - `POSTGRES_PASSWORD` — used by the PostgreSQL container and `DATABASE_URL`.
+   - `FIRST_ADMIN_PASSWORD` — so the admin user is created on first boot.
+
+   Generate strong values with:
+
+   ```bash
+   python3 -c "import secrets; print(secrets.token_urlsafe(48))"
+   ```
+
+3. **Build the images**
+
+   ```bash
+   docker compose build
+   ```
+
+4. **Start PostgreSQL first and wait for it to become healthy**
+
+   ```bash
+   docker compose up -d postgres
+   docker inspect --format='{{.State.Health.Status}}' nexus-postgres   # wait for "healthy"
+   ```
+
+5. **Start the backend, then Ollama**
+
+   ```bash
+   docker compose up -d nexus-backend ollama
+   ```
+
+   The backend creates all database tables automatically on startup.
+
+6. **Pull your LLM model** (default `qwen3:8b`)
+
+   ```bash
+   docker exec nexus-ollama ollama pull qwen3:8b
+   ```
+
+7. **Start every service**
+
+   ```bash
+   docker compose up -d
+   ```
+
+8. **Verify**
+
+   ```bash
+   curl -s http://localhost/api/health
+   # {"status":"ok","database":"ok","ollama":"ok"}
+   ```
+
+9. **Log in** — open `http://localhost` and sign in as `admin` with your `FIRST_ADMIN_PASSWORD`.
+
+---
+
+## Configuration
+
+Copy `.env.example` to `.env` and adjust what you need. All variables are read at container startup — restart the backend after changing them.
+
+### Application / Backend
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `SECRET_KEY` | Secret used to sign JWT access tokens. Generate a long random value. The bundled `.env.example` names it `NEXUS_SECRET_KEY` — the installer writes one for you. | random 32 bytes |
+| `ALGORITHM` | JWT signing algorithm. | `HS256` |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | Lifetime of a login token, in minutes. | `60` |
+| `DATABASE_URL` | SQLAlchemy async database URL used by the backend. | `postgresql+asyncpg://nexus:nexus@postgres:5432/nexus` |
+| `NEXUS_PORT` | Port NEXUS is configured to listen on for local development. | `3000` |
+| `OLLAMA_URL` | Base URL of the Ollama API from the backend container's perspective. | `http://ollama:11434` |
+| `NEXUS_LLM_MODEL` | Default LLM model used for chat. See [LLM Configuration](#llm-configuration). | `qwen3:8b` |
+| `IMAGE_PROVIDER` | Image generation backend architecture (`none` for now; providers plug in here). | `none` |
+| `FIRST_ADMIN_USERNAME` | Username of the admin account created on first boot. | *(empty — set at install)* |
+| `FIRST_ADMIN_PASSWORD` | Password for that admin account. You can also use the `/api/auth/setup` endpoint instead. | *(empty)* |
+| `FIRST_ADMIN_EMAIL` | Email address for that admin account. | *(empty)* |
+
+### Database (Docker)
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `POSTGRES_DB` | Name of the NEXUS database. | `nexus` |
+| `POSTGRES_USER` | PostgreSQL user. | `nexus` |
+| `POSTGRES_PASSWORD` | PostgreSQL password. **Must be set** — used by both the `postgres` container and `DATABASE_URL`. | *(required)* |
+
+### SSO (OIDC)
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `OIDC_ENABLED` | Enable or disable OIDC SSO. | `false` |
+| `OIDC_ISSUER_URL` | Base URL of your identity provider (e.g. `https://auth.example.com`). | *(empty)* |
+| `OIDC_CLIENT_ID` | Client ID created in the identity provider. | *(empty)* |
+| `OIDC_CLIENT_SECRET` | Client secret created in the identity provider. | *(empty)* |
+| `OIDC_REDIRECT_URI` | Callback URI that the provider should redirect to. | `http://localhost/auth/callback` |
+| `OIDC_GROUP_ADMINS` | Provider group whose members become NEXUS admins. | `admins` |
+| `OIDC_GROUP_USERS` | Provider group whose members become regular NEXUS users. | `users` |
+
+### Backup
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `BACKUP_DIR` | Directory where `backup.sh` stores archives. | `./backups` |
+
+---
+
+## SSO Configuration
+
+NEXUS implements OpenID Connect the standard way: it can be configured with any OIDC provider. The steps below use Authentik as the example.
+
+### 1. Create a provider in Authentik
+
+1. Log in to your Authentik admin interface.
+2. Go to **Applications → Providers → Create**.
+3. Choose **OAuth2/OpenID Provider**.
+4. Enter a name (e.g. `NEXUS`), leave `Authorization flow` unset, and set:
+   - **Client Type**: `Confidential`
+   - **Redirect URIs**: `http://your-nexus-host/auth/callback` (must match `OIDC_REDIRECT_URI`)
+5. Save and copy the generated **Client ID** and **Client Secret**.
+
+### 2. Create an application in Authentik
+
+1. Go to **Applications → Applications → Create**.
+2. Name it `NEXUS` and attach the provider you just created.
+3. Save.
+
+### 3. Create groups (optional but recommended)
+
+1. Under **Directory → Groups**, create `admins` and `users`.
+2. Assign your admin users to `admins`, everyone else to `users`.
+
+### 4. Configure NEXUS environment variables
+
+```ini
+OIDC_ENABLED=true
+OIDC_ISSUER_URL=https://auth.example.com
+OIDC_CLIENT_ID=your-authentik-client-id
+OIDC_CLIENT_SECRET=your-authentik-client-secret
+OIDC_REDIRECT_URI=http://your-nexus-host/auth/callback
+OIDC_GROUP_ADMINS=admins
+OIDC_GROUP_USERS=users
+```
+
+Restart the backend after making the change:
+
+```bash
+docker compose restart nexus-backend
+```
+
+### 5. Group mapping
+
+When a user authenticates with SSO for the first time, NEXUS looks them up by their `preferred_username` (OpenID Connect claims). If the user is not found they are created automatically. Group membership determines their role:
+
+- Member of `OIDC_GROUP_ADMINS` → `ADMIN`
+- Member of `OIDC_GROUP_USERS` (or no group match) → `USER`
+
+### 6. Testing SSO
+
+1. Visit `http://your-nexus-host/api/auth/oidc/authorize` — you will be redirected to Authentik.
+2. Sign in with a test account.
+3. You will be redirected back and issued a NEXUS token.
+4. Confirm the account was created under **Users** in the NEXUS admin panel.
+
+---
+
+## LLM Configuration
+
+NEXUS talks to Ollama, which pulls and runs open-weight models locally. The model is chosen with the `NEXUS_LLM_MODEL` environment variable.
+
+### 1. Set the model
+
+```ini
+NEXUS_LLM_MODEL=qwen3:8b
+```
+
+or override it for a single request by sending a custom `model` in the message body:
+
+```json
+{
+  "content": "Explain quantum computing in simple terms",
+  "model": "llama3.1:8b"
+}
+```
+
+### 2. Pull models into Ollama
+
+```bash
+# with docker
+docker exec nexus-ollama ollama pull llama3.1:8b
+
+# or via the admin API
+curl -X POST http://localhost/api/admin/models/pull \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "llama3.1:8b"}'
+```
+
+### Available models
+
+`Ollama Model Library` has hundreds of models. Common choices:
+
+| Model | Parameter count | RAM (CPU) | Notes |
+|-------|-----------------|-----------|-------|
+| `qwen3:4b` | 4B | ~3-4 GB | Fast, low-footprint default for 8 GB hosts |
+| `qwen3:8b` | 8B | ~6-8 GB | **Default** — best balance of quality and speed |
+| `llama3.1:8b` | 8B | ~6-8 GB | Excellent general-purpose tooling model |
+| `mistral:7b` | 7B | ~5-7 GB | Fast and strong at instruction following |
+| `gemma2:9b` | 9B | ~7-9 GB | Google's compact Gemini-style model |
+| `deepseek-r1:7b` | 7B | ~6-8 GB | Reasoning-focused model |
+| `llama3.3:70b` | 70B | ~40+ GB | High-quality; needs serious hardware |
+
+Run `docker exec nexus-ollama ollama list` to see what is already present on your host.
+
+### RAM requirements
+
+LLM memory usage is roughly the parameter count scaled by the quantization precision. As a rule of thumb, reserve **~1 GB of RAM per 1B parameters** for CPU inference at default quantization, plus ~2 GB for the rest of the stack. On a 4 GB host stick to small models (`qwen3:4b`); for interactive use of 8B models plan for 16 GB.
+
+### CPU vs GPU
+
+- **CPU only**: works out of the box — Ollama on CPU is correct but slower (a few tokens/second for 8B models).
+- **NVIDIA GPU (CUDA)**: install the `nvidia-container-toolkit`, then add to `docker-compose.yml`:
+
+  ```yaml
+  ollama:
+    image: ollama/ollama:latest
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+  ```
+
+  and restart:
+
+  ```bash
+  docker compose up -d ollama
+  ```
+
+  Ollama automatically detects the GPU and offloads inference to it.
+- **AMD / Apple Silicon**: Ollama supports these too; enable the relevant Ollama flags in the service environment.
+
+---
+
+## Backup & Restore
+
+### Backup
+
+```bash
+sudo bash backup.sh
+```
+
+This creates a timestamped archive in `./backups` (override with `BACKUP_DIR`) containing:
+
+- a `pg_dump` of the PostgreSQL database (`database.sql.gz`),
+- your `.env` file (so secrets travel with the backup),
+- the `docker-compose.yml` and `docker-compose.prod.yml` files,
+- your `config/` directory.
+
+Example output:
+
+```
+  Location: backups/nexus-backup-20260914-091530.tar.gz
+```
+
+### Restore
+
+```bash
+sudo bash restore.sh                              # lists backups and prompts
+sudo bash restore.sh backups/nexus-backup-20260914-091530.tar.gz
+```
+
+The restore script:
+
+1. Stops all containers.
+2. Drops and recreates the database, then imports `database.sql.gz`.
+3. Restores `.env` and `config/`.
+4. Starts all services and runs a health check.
+
+> **Warning**: restore overwrites the current database and configuration. It asks you to confirm with `yes` before touching anything.
+
+### Automating backups with cron
+
+```bash
+# Nightly at 03:00
+0 3 * * * cd /opt/nexus && sudo bash backup.sh
+# Clean up backups older than 30 days
+30 3 * * * find /opt/nexus/backups -name '*.tar.gz' -mtime +30 -delete
+```
+
+---
+
+## Update
+
+```bash
+sudo bash update.sh
+```
+
+The updater:
+
+1. Stops all containers while preserving storage volumes.
+2. Pulls the latest code with `git pull`.
+3. Rebuilds all images with `--no-cache` to avoid stale layers.
+4. Starts PostgreSQL, waits for it to be healthy, then starts the backend.
+5. Refreshes your configured Ollama model (`ollama pull`).
+6. Starts everything and runs a health check.
+
+> Tip: run `bash backup.sh` before updating so you can roll back if needed.
+
+---
+
+## Uninstall
+
+```bash
+sudo bash uninstall.sh
+```
+
+The uninstaller stops and removes all NEXUS containers, then asks three questions:
+
+| Prompt | What it removes |
+|--------|-----------------|
+| `Remove database volumes` | `nexus-postgres-data`, `nexus-ollama-data`, `caddy-data`, `caddy-config` (**deletes all data**) |
+| `Remove Docker images` | The `nexus-frontend` / `nexus-backend` images and dangling images |
+| `Remove backup archives` | Everything in `BACKUP_DIR` |
+
+If you answer **no** to any prompt, the corresponding artifacts are preserved and the script prints the manual commands to remove them later.
+
+---
+
+## Architecture
+
+NEXUS is composed of five containers orchestrated by Docker Compose on a private `nexus-network` bridge:
+
+```
+                        ┌────────────────────────┐
+                        │        Browser         │
+                        │      (dark UI)         │
+                        └───────────┬────────────┘
+                                    │ HTTP/HTTPS (80 / 443)
+                                    ▼
+                        ┌────────────────────────┐
+                        │        Caddy           │  Reverse proxy + TLS
+                        │    :80   :443          │
+                        └───────────┬────────────┘
+                                    │
+                    ┌───────────────┴───────────────┐
+                    ▼                               ▼
+        ┌──────────────────────┐          ┌──────────────────────┐
+        │    Frontend          │ /api/*   │    Backend           │
+        │   React + Nginx      │─────────▶│   FastAPI  :8000     │
+        │   static SPA :80     │          │   business logic     │
+        └──────────────────────┘          └──────┬───────┬───────┘
+                                                 │       │ async ORM
+                                                 │       ▼
+                                                 │  ┌──────────────┐
+                                                 │  │  PostgreSQL  │
+                                                 │  │ :5432 (vol)  │
+                                                 │  └──────────────┘
+                                                 ▼
+                                        ┌──────────────────────┐
+                                        │      Ollama          │
+                                        │ LLM :11434 (vol)    │
+                                        │ chat + generate     │
+                                        └──────────────────────┘
+```
+
+### Services
+
+| Service | Role | Ports |
+|---------|------|-------|
+| **Frontend** (`nexus-frontend`) | React SPA (Vite build) served by Nginx. Proxies `/api/*` to the backend. | `80` (published) |
+| **Backend** (`nexus-backend`) | FastAPI application. Auth, users, chat, permissions, admin, health, audit logging. Serves the API and streams LLM tokens via SSE. | `8000` (internal) |
+| **PostgreSQL** (`postgres`) | Primary datastore — users, permissions, chats, messages, usage, audit logs. Data persisted in the `nexus-postgres-data` volume. | `5432` (internal) |
+| **Ollama** (`ollama`) | Local LLM inference engine. Models persisted in the `nexus-ollama-data` volume. | `11434` (internal) |
+| **Caddy** (`caddy`) | Edge reverse proxy and automatic HTTPS termination. | `80`, `443` (published) |
+
+The backend talks to Ollama over the internal network using `httpx`. Chat responses are returned as Server-Sent Events (`text/event-stream`) so tokens appear as they are generated.
+
+For production-like resource limits and log rotation, layer `docker-compose.prod.yml` on top:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+```
+
+---
+
+## API Reference
+
+Base URL: `http://localhost` (via Caddy) or `http://localhost:8000` (backend directly).
+
+All endpoints except `/api/auth/login`, `/api/auth/setup`, `/api/setup/*`, `/api/health`, and `/` require a `Bearer` token:
+
+```
+Authorization: Bearer <access_token>
+```
+
+### Auth
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/auth/login` | Log in with username/password, returns a JWT |
+| `POST` | `/api/auth/setup` | First-run admin creation (must be the first user) |
+| `GET` | `/api/auth/me` | Current user profile |
+| `GET` | `/api/auth/oidc/authorize` | Redirect to the OIDC provider's login |
+| `POST` | `/api/auth/oidc/callback` | OIDC code exchange and login |
+
+```bash
+curl -X POST http://localhost/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "admin", "password": "your-password"}'
+# {"access_token":"eyJhbGciOi...","token_type":"bearer"}
+```
+
+### Setup
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/setup/status` | Whether an initial setup is still required |
+| `POST` | `/api/setup/` | Complete initial setup (creates the first admin) |
+
+### Chat
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/chat/` | List the current user's chats |
+| `POST` | `/api/chat/` | Create a chat |
+| `GET` | `/api/chat/{id}` | Chat detail including all messages |
+| `PUT` | `/api/chat/{id}` | Rename a chat |
+| `DELETE` | `/api/chat/{id}` | Delete a chat |
+| `POST` | `/api/chat/{id}/messages` | Send a message; returns an SSE stream of tokens |
+| `POST` | `/api/chat/{id}/messages/{message_id}/regenerate` | Regenerate an assistant message |
+| `DELETE` | `/api/chat/{id}/messages/{message_id}` | Delete a message |
+
+```bash
+# create a chat
+curl -X POST http://localhost/api/chat/ \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"title": "My first chat"}'
+
+# send a message (streams SSE tokens)
+curl -N -X POST http://localhost/api/chat/1/messages \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"content": "Hello NEXUS"}'
+```
+
+### Users (admin)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/users/` | List all users |
+| `POST` | `/api/users/` | Create a user |
+| `GET` | `/api/users/{id}` | Get a user |
+| `PUT` | `/api/users/{id}` | Update a user (name, email, role, active) |
+| `DELETE` | `/api/users/{id}` | Deactivate a user |
+| `PUT` | `/api/users/{id}/permissions` | Replace a user's permission set |
+| `PUT` | `/api/users/{id}/limits` | Set daily token/message limits |
+| `GET` | `/api/users/{id}/usage` | Last 30 days of usage for a user |
+
+### Permissions
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/permissions/` | List all known permissions (any authenticated user) |
+| `POST` | `/api/permissions/` | Create a permission (admin) |
+
+### Admin
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/admin/dashboard` | System counters (users, chats, messages, tokens today) |
+| `GET` | `/api/admin/logs` | Audit log entries (filter by `user_id` / `action`) |
+| `GET` | `/api/admin/system` | CPU, memory, disk, uptime |
+| `GET` | `/api/admin/models` | Installed Ollama models |
+| `POST` | `/api/admin/models/pull` | Pull a model into Ollama |
+| `GET` | `/api/admin/models/status` | Ollama health + default model presence |
+
+### Health
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/health` | Overall health: `status`, `database`, `ollama` |
+
+```bash
+curl -s http://localhost/api/health
+# {"status":"ok","database":"ok","ollama":"ok"}
+```
+
+---
+
+## Permissions
+
+NEXUS users have a role (`ADMIN` or `USER`) and an optional set of fine-grained permissions. **Admins implicitly hold every permission** — they bypass permission checks entirely.
+
+The following permissions are seeded automatically with a fresh install:
+
+| Permission | Description |
+|------------|-------------|
+| `chat.use` | Use the chat feature and send messages |
+| `chat.manage` | Rename, delete, and organize chats |
+| `image.generate` | Generate images via the image provider |
+| `admin.access` | Access the admin panel and admin APIs |
+
+Additional permissions can be created from the admin panel or via `POST /api/permissions/`. Assignment is done with `PUT /api/users/{id}/permissions`:
+
+```json
+{
+  "permission_ids": [1, 3]
+}
+```
+
+Role behavior summary:
+
+| Capability | ADMIN | USER |
+|------------|-------|------|
+| Chat | ✔ | ✔ (with permissions) |
+| Manage own users/chats | ✔ | ✔ |
+| View / create permissions | ✔ any | ✔ read-only |
+| Manage any user | ✔ | ✘ |
+| Admin dashboard, logs, system info | ✔ | ✘ |
+| Pull Ollama models | ✔ | ✘ |
+| Bypass permission checks | ✔ | ✘ |
+
+---
+
+## Development
+
+### Backend setup
+
+Requires Python 3.11+.
+
+```bash
+cd backend
+
+# create a virtualenv and install dependencies
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+
+# install test dependencies
+pip install pytest pytest-asyncio aiosqlite
+```
+
+Run the backend locally against SQLite (no Docker required):
+
+```bash
+# Windows PowerShell
+$env:DATABASE_URL = "sqlite+aiosqlite:///./dev.db"
+$env:FIRST_ADMIN_USERNAME = "admin"
+$env:FIRST_ADMIN_PASSWORD = "admin"
+
+# Linux/macOS
+# export DATABASE_URL="sqlite+aiosqlite:///./dev.db"
+
+uvicorn app.main:app --reload --port 8000
+```
+
+Or against PostgreSQL via Docker:
+
+```bash
+docker compose up -d postgres
+cd backend
+uvicorn app.main:app --reload --port 8000
+```
+
+Open the interactive docs at `http://localhost:8000/docs` (Swagger UI) to try every endpoint.
+
+### Frontend setup
+
+Requires Node.js 18+.
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+The Vite dev server proxies `/api` to the backend; see `vite.config.ts` for the proxy target. Build a production bundle with `npm run build` (outputs to `frontend/dist`).
+
+### Running tests
+
+The test suite uses `pytest` with `pytest-asyncio` and runs against an isolated SQLite database. Ollama and all external services are mocked — **no Docker, database, or network access required**.
+
+```bash
+# from the repository root (pytest.ini sets asyncio_mode=auto)
+pytest tests -v
+
+# or run a single file
+pytest tests/test_auth.py -v
+```
+
+The common fixtures live in `tests/conftest.py` (a copy is mirrored at `backend/tests/conftest.py` so tests can also live alongside the backend package).
+
+Test coverage by file:
+
+| File | Covers |
+|------|--------|
+| `tests/test_auth.py` | Login, setup, `/me`, token expiry |
+| `tests/test_users.py` | CRUD, permissions, limits, deactivation |
+| `tests/test_chat.py` | Chat CRUD, streaming messages, quota enforcement |
+| `tests/test_permissions.py` | Permission checks and listing |
+| `tests/test_health.py` | Health endpoint, setup status |
+| `tests/test_admin.py` | Dashboard, audit logs, system info |
+
+---
+
+## Troubleshooting
+
+### Container won't start
+
+```bash
+docker compose ps                 # is it there? what state?
+docker compose logs <service>     # "nexus-frontend", "nexus-backend", ...
+```
+
+**Backend crashes on boot?** A missing or malformed `.env` is the most common cause. Verify required variables exist (`POSTGRES_PASSWORD`, secret key) and that `DATABASE_URL` matches `POSTGRES_PASSWORD`. If you changed `.env`, remove the container and start fresh:
+
+```bash
+docker compose down
+docker compose up -d
+```
+
+**Frontend returns 502?** The frontend waits for the backend's healthcheck. Give it a few seconds, then `docker compose ps` — if the backend is `unhealthy`, check its logs.
+
+### Database connection failed
+
+```
+sqlalchemy.exc.OperationalError: (psycopg2.OperationalError) connection failed
+```
+
+1. Ensure PostgreSQL is healthy: `docker inspect --format='{{.State.Health.Status}}' nexus-postgres`.
+2. Confirm `POSTGRES_PASSWORD` in `.env` matches the password inside `DATABASE_URL`:
+
+   ```ini
+   POSTGRES_PASSWORD=MySecret
+   DATABASE_URL=postgresql+asyncpg://nexus:MySecret@postgres:5432/nexus
+   ```
+
+3. Verify the database volume survived: `docker volume ls | grep nexus-postgres`.
+
+### Ollama not responding
+
+1. Check the container: `docker compose ps ollama` and `docker compose logs ollama`.
+2. Try the API directly: `curl -s http://localhost:11434/api/tags` (host) or `docker exec nexus-ollama curl -s http://localhost:11434/api/tags` (inside the container).
+3. On NAT-ed / firewalled hosts make sure `OLLAMA_URL` is reachable from the *backend* container, not just the host.
+4. If a chat returns `[unable to load model]`, pull the model: `docker exec nexus-ollama ollama pull qwen3:8b`.
+
+### Out of memory
+
+Ollama loads the entire model into RAM. If the host OOMs:
+
+- Switch to a smaller model (`NEXUS_LLM_MODEL=qwen3:4b`).
+- Check free memory: `free -h`.
+- Confirm the container memory limits (`docker compose.prod.yml` caps Ollama at 8 GB).
+- Set a smaller context window in Ollama's `options` if you access the raw API.
+
+### Permission denied
+
+**`Permission denied` running the scripts?** Make them executable:
+
+```bash
+chmod +x install.sh backup.sh restore.sh update.sh uninstall.sh healthcheck.sh
+sudo bash install.sh     # the install/uninstall/restore scripts must run as root
+```
+
+**Docker permission denied** — add your user to the `docker` group and re-login:
+
+```bash
+sudo usermod -aG docker $USER
+```
+
+**Port 80 already in use** — Caddy needs port 80/443. Free it, or change the published ports in `docker-compose.yml`.
+
+---
+
+## Security
+
+NEXUS is designed for self-hosting with security in mind:
+
+- **Password storage** — bcrypt hashing via `passlib`; plaintext passwords are never stored or logged.
+- **JWT authentication** — stateless bearer tokens signed with `HS256` using a server-side `SECRET_KEY`; tokens expire after `ACCESS_TOKEN_EXPIRE_MINUTES` (default 60 minutes).
+- **Role-based access control** — admin endpoints (users, permissions, logs, system info) reject non-admin callers with `403`, and chats are scoped per user so one user can never read another's data.
+- **Per-user quotas** — daily token and message limits prevent a single (possibly compromised) account from exhausting the server.
+- **Audit logging** — logins, user creation, permission changes, chat deletions, and OIDC logins are recorded with actor, IP, and timestamp for post-incident review.
+- **SSO-ready** — OIDC integration lets you centralize identity with Authentik/Keycloak instead of managing passwords in NEXUS.
+- **TLS by default** — Caddy terminates HTTPS with automatic certificates, so traffic to the browser is encrypted.
+- **Sandboxed services** — each component runs in its own container; only Caddy and the frontend expose public ports, keeping PostgreSQL and Ollama off the host network.
+
+### Best practices
+
+1. **Change all default secrets** — the installer generates them, but if you created `.env` manually, replace the signing secret and `POSTGRES_PASSWORD`.
+2. **Keep `.env` out of git** — it is already git-ignored; never commit it.
+3. **Use HTTPS** — put NEXUS behind Caddy (or your own reverse proxy) and enable automatic certificate renewal.
+4. **Restrict the admin group** — with SSO, only members of the admin group should be granted `ADMIN`.
+5. **Back up regularly** — schedule `backup.sh` and test a `restore.sh` on a scratch instance before you need it.
+6. **Stay updated** — run `update.sh` to receive fixes; rebuilds pick up the latest base images.
+7. **Harden the host** — apply OS patches, use a firewall that only exposes 80/443, and consider `docker-compose.prod.yml` for resource limits.
+
+---
+
+## License
+
+MIT © NEXUS Contributors. See [LICENSE](LICENSE) for the full text.
