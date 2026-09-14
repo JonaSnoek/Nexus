@@ -110,8 +110,14 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# 7 + 8: Cleanup then start
+# 7 + 8: Cleanup then start (rebuild only if containers are stale/unhealthy)
 # -----------------------------------------------------------------------------
+FRONTEND_IMG_HEALTHY=$(docker inspect --format='{{.State.Health.Status}}' nexus-frontend 2>/dev/null || echo "missing")
+if [[ "$FRONTEND_IMG_HEALTHY" != "healthy" ]]; then
+    info "Frontend ist nicht gesund (${FRONTEND_IMG_HEALTHY:-unbekannt}) - baue Images neu (mit Cache)..."
+    docker compose build 2>&1 | tail -2 || true
+fi
+
 info "NEXUS starten..."
 if ! docker compose up -d 2>&1 | tail -5; then
     warn "Compose-Start unvollstaendig - pruefe Logs: docker compose ps"
@@ -140,32 +146,37 @@ fi
 # -----------------------------------------------------------------------------
 # 9: Healthchecks
 # -----------------------------------------------------------------------------
-info "Healthchecks..."
+info "Healthchecks abwarten (Backend/Frontend bis zu 90s)..."
+STATUS_FRONTEND="FAIL"; STATUS_BACKEND="FAIL"; STATUS_DB="FAIL"; STATUS_OLLAMA="FAIL"
 HEALTHY=false
 for i in $(seq 1 45); do
-    if curl -sf "http://localhost/api/health" >/dev/null 2>&1; then HEALTHY=true; break; fi
+    curl -sf "http://localhost/api/health" >/dev/null 2>&1 && STATUS_BACKEND="OK"
+    curl -sf "http://localhost/" >/dev/null 2>&1 && STATUS_FRONTEND="OK"
+    if [[ "$STATUS_BACKEND" == "OK" ]] && [[ "$STATUS_FRONTEND" == "OK" ]]; then HEALTHY=true; break; fi
     sleep 2
 done
 
-STATUS_FRONTEND="FAIL"; STATUS_BACKEND="FAIL"; STATUS_DB="FAIL"; STATUS_OLLAMA="FAIL"
-curl -sf "http://localhost/" >/dev/null 2>&1 && STATUS_FRONTEND="OK"
-curl -sf "http://localhost/api/health" >/dev/null 2>&1 && STATUS_BACKEND="OK"
 if docker exec nexus-postgres pg_isready >/dev/null 2>&1 || docker exec nexus-postgres pg_isready -U nexus -d nexus >/dev/null 2>&1; then
     STATUS_DB="OK"
 fi
 docker exec nexus-ollama ollama list >/dev/null 2>&1 && STATUS_OLLAMA="OK"
 
 # -----------------------------------------------------------------------------
-# 10: Port 80
+# 10: Port 80 + Proxy container health
 # -----------------------------------------------------------------------------
 HTTP_OK="FAIL"
 if curl -sf "http://localhost/" >/dev/null 2>&1; then
     HTTP_OK="OK"
 else
     if command -v ss &>/dev/null; then
-        if ss -tlnp 2>/dev/null | grep -q ":80 "; then HTTP_OK="OK"; fi
+        if ss -tlnp 2>/dev/null | grep -q ":80 "; then HTTP_OK="OK"
+        else
+            warn "Port 80 ist nicht belegt - Caddy laeuft nicht."
+            echo "  Pruefe: docker compose logs nexus-caddy --tail 30"
+        fi
     fi
 fi
+STATUS_CADDY=$(docker inspect --format='{{.State.Health.Status}}' nexus-caddy 2>/dev/null || echo "missing")
 
 SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 [[ -z "$SERVER_IP" ]] && SERVER_IP=$(ip -4 route get 8.8.8.8 2>/dev/null | awk '{print $7; exit}')
@@ -180,9 +191,9 @@ echo -e "  Disk:        ${DISK_OK}"
 echo -e "  Docker:      ${DOCKER_OK}"
 echo -e "  Compose:     ${COMPOSE_OK}"
 echo -e "  PostgreSQL:  ${STATUS_DB}"
+echo -e "  Ollama:      ${STATUS_OLLAMA}"
 echo -e "  Backend:     ${STATUS_BACKEND}"
 echo -e "  Frontend:    ${STATUS_FRONTEND}"
-echo -e "  Ollama:      ${STATUS_OLLAMA}"
 echo -e "  HTTP (Port 80): ${HTTP_OK}"
 echo ""
 echo -e "  NEXUS:       http://${SERVER_IP}"
@@ -196,5 +207,14 @@ if [[ "$STATUS_BACKEND" != "OK" ]] || [[ "$STATUS_DB" != "OK" ]]; then
     echo "  docker image prune -af                # unbenutzte Images (keine Volumes)"
     echo "  docker logs nexus-postgres --tail 30"
     echo "  docker logs nexus-backend --tail 30"
+    exit 1
+fi
+
+if [[ "$STATUS_FRONTEND" != "OK" ]] || [[ "$HTTP_OK" != "OK" ]] || [[ "$STATUS_CADDY" != "healthy" ]]; then
+    echo ""
+    warn "Frontend/Proxy-Problem. Taetigkeiten:"
+    echo "  docker compose logs nexus-frontend --tail 30"
+    echo "  docker compose logs nexus-caddy --tail 30"
+    echo "  docker exec nexus-frontend curl -fsS http://localhost/   # intern testen"
     exit 1
 fi

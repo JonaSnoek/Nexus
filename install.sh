@@ -93,6 +93,25 @@ if (( CURRENT_FREE < MIN_FREE_GB )); then
 fi
 ok "Freier Speicher: ${CURRENT_FREE}GB"
 
+# ---------- Port 80 conflict check ----------
+PORT80_BUSY=""
+if command -v ss &>/dev/null; then
+    PORT80_BUSY=$(ss -tlnp 2>/dev/null | grep -E ":80\s" | grep -v "docker-proxy" || true)
+elif command -v netstat &>/dev/null; then
+    PORT80_BUSY=$(netstat -tlnp 2>/dev/null | grep -E ":80\s" | grep -v "docker-proxy" || true)
+fi
+if [[ -n "$PORT80_BUSY" ]]; then
+    warn "Port 80 ist bereits durch einen anderen Dienst belegt:"
+    echo "  $PORT80_BUSY"
+    warn "NEXUS-Caddy kann dann nicht starten. Bitte Port 80 freigeben (z.B. Apache/nginx stoppen) und erneut ausfuehren."
+    read -rp "Trotzdem fortfahren? (yes/no): " PORT80_YES
+    if [[ "$PORT80_YES" != "yes" ]]; then
+        fatal "Abbruch - Port 80 muss frei sein fuer http://${SERVER_IP}"
+    fi
+else
+    ok "Port 80 ist frei"
+fi
+
 # ---------- .env ----------
 if [[ ! -f .env ]]; then
     cp .env.example .env
@@ -196,20 +215,19 @@ docker compose up -d 2>/dev/null || true
 ok "Alle Services gestartet"
 
 # ---------- Healthcheck ----------
-info "Healthcheck (bis zu 60s)..."
+info "Healthchecks abwarten (Backend/Frontend/Proxy bis zu 120s)..."
 HEALTHY=false
-for i in $(seq 1 30); do
-    if curl -sf "http://localhost/api/health" >/dev/null 2>&1; then HEALTHY=true; break; fi
+STATUS_FRONTEND="FAIL"; STATUS_BACKEND="FAIL"; STATUS_DB="FAIL"; STATUS_OLLAMA="FAIL"; STATUS_PROXY="FAIL"
+for i in $(seq 1 60); do
+    curl -sf "http://localhost/api/health" >/dev/null 2>&1 && STATUS_BACKEND="OK"
+    curl -sf "http://localhost/" >/dev/null 2>&1 && STATUS_FRONTEND="OK"
+    [[ "$STATUS_BACKEND" == "OK" ]] && [[ "$STATUS_FRONTEND" == "OK" ]] && HEALTHY=true && break
     sleep 2
 done
 
-# ---------- Status ----------
-STATUS_FRONTEND="FAIL"; STATUS_BACKEND="FAIL"; STATUS_DB="FAIL"; STATUS_OLLAMA="FAIL"; STATUS_PROXY="FAIL"
-curl -sf "http://localhost/" >/dev/null 2>&1 && STATUS_FRONTEND="OK"
-curl -sf "http://localhost/api/health" >/dev/null 2>&1 && STATUS_BACKEND="OK"
 docker exec nexus-postgres pg_isready -U nexus -d nexus >/dev/null 2>&1 && STATUS_DB="OK"
 docker exec nexus-ollama ollama list >/dev/null 2>&1 && STATUS_OLLAMA="OK"
-docker inspect --format='{{.State.Status}}' nexus-caddy 2>/dev/null | grep -q "running" && STATUS_PROXY="OK"
+docker inspect --format='{{.State.Health.Status}}' nexus-caddy 2>/dev/null | grep -q "healthy" && STATUS_PROXY="OK"
 
 echo ""
 echo -e "${GREEN}========================================${NC}"
@@ -233,8 +251,10 @@ echo -e "${GREEN}========================================${NC}"
 
 if [[ "$HEALTHY" != "true" ]]; then
     echo ""
-    warn "Backend ist nicht erreichbar. Diagnose:"
-    echo "  docker compose logs nexus-backend --tail 30"
+    warn "NEXUS ist nicht vollstaendig erreichbar. Diagnose:"
     echo "  docker compose ps"
+    echo "  docker compose logs nexus-frontend --tail 30"
+    echo "  docker compose logs nexus-backend --tail 30"
+    echo "  docker compose logs nexus-caddy --tail 30"
     echo "  sudo ./repair.sh"
 fi

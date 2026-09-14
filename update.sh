@@ -77,6 +77,27 @@ cp .env ".env.bak-${TSTAMP}" 2>/dev/null || true
 ok "Konfiguration gesichert: .env.bak-${TSTAMP}"
 info "Backups bleiben erhalten. Loeschen mit: rm .env.bak-*"
 
+# --- Pre-update backup (DB dump + config, stored OUTSIDE all volumes) ---
+PREBAK_DIR="./backups/pre-update-${TSTAMP}"
+mkdir -p "$PREBAK_DIR"
+PREBAK_OK=false
+if docker inspect nexus-postgres >/dev/null 2>&1 && docker inspect --format='{{.State.Health.Status}}' nexus-postgres 2>/dev/null | grep -q "healthy"; then
+    set -a; source .env 2>/dev/null; set +a
+    if docker exec nexus-postgres pg_dump -U "${POSTGRES_USER:-nexus}" -d "${POSTGRES_DB:-nexus}" --no-owner --no-acl 2>/dev/null | gzip > "$PREBAK_DIR/database.sql.gz"; then
+        ok "Datenbank-Backup: $PREBAK_DIR/database.sql.gz"
+        PREBAK_OK=true
+    else
+        warn "Datenbank-Backup fehlgeschlagen (PostgreSQL erreichbar? Container pruefen)"
+    fi
+else
+    warn "PostgreSQL nicht erreichbar - Datenbank-Backup uebersprungen. Pruefe: docker compose ps"
+fi
+cp docker-compose.yml "$PREBAK_DIR/" 2>/dev/null || true
+cp docker/Caddyfile "$PREBAK_DIR/Caddyfile" 2>/dev/null || true
+cp .env "$PREBAK_DIR/.env" 2>/dev/null || true
+echo "$PREV_COMMIT" > "$PREBAK_DIR/git-revision.txt" 2>/dev/null || true
+ok "Pre-Update-Konfiguration gesichert nach: $PREBAK_DIR"
+
 # -----------------------------------------------------------------------------
 # 3: git pull
 # -----------------------------------------------------------------------------

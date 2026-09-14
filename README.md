@@ -801,6 +801,20 @@ docker compose up -d
 
 **Frontend returns 502?** The frontend waits for the backend's healthcheck. Give it a few seconds, then `docker compose ps` — if the backend is `unhealthy`, check its logs.
 
+**Frontend is `unhealthy`?** The container's healthcheck uses `curl -fsS http://localhost/`. `curl` is installed into the production image (`RUN apk add --no-cache curl`). Cause of the healthcheck failing:
+
+```bash
+docker logs --tail=30 nexus-frontend           # nginx errors / curl not found?
+docker exec nexus-frontend curl -fsS http://localhost/ && echo OK   # internal test
+docker inspect nexus-frontend --format='{{json .State.Health}}'     # last health output
+```
+
+Wenn der Container mit einer **alten Version** laeuft (vor dem curl-Einbau), hilft ein Rebuild:
+```bash
+sudo ./repair.sh           # baut das Frontend-Image neu (mit Cache) und startet es
+```
+**Wichtig:** Caddy wartet auf `nexus-frontend service_healthy`. Ist das Frontend nicht `healthy`, startet Caddy nicht und Port 80 ist tot. Die Ursache muss also behoben, nicht der Healthcheck deaktiviert werden.
+
 ### Disk full / No space left on device
 
 Symptom: `FATAL: could not write lock file "postmaster.pid"`, container restart loops, `docker compose up` fails mid-build.
