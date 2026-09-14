@@ -42,32 +42,68 @@ NEXUS is a modern, self-hosted AI assistant platform designed to run entirely on
 
 ---
 
-## Quick Installation
+## Installation
 
 ```bash
-git clone https://github.com/your-org/nexus.git
-cd nexus
+git clone https://github.com/JonaSnoek/Nexus.git
+cd Nexus
 sudo ./install.sh
 ```
 
-The installer is **idempotent** — it is safe to run it again. It will:
+Der Installer ist **idempotent** (mehrfaches Ausfuehren ist sicher). Er:
 
-1. Verify you are root on a Linux x86_64 host.
-2. Install Docker and the Docker Compose plugin if missing.
-3. Create `.env` from `.env.example` and generate strong secrets for the JWT signing key and PostgreSQL password.
-4. Prompt for the initial admin password (or leave blank to set it later in `.env`).
-5. Pull and build all images, start PostgreSQL, wait for it to become healthy, then start the backend.
-6. Pull your configured LLM model into Ollama (this can take several minutes for large models).
-7. Start everything and run a health check against `http://localhost/api/health`.
+1. Prueft Root-Rechte, Linux und x86_64.
+2. Installiert Docker und Docker Compose falls fehlend.
+3. Erstellt `.env` aus `.env.example` und generiert starke Secrets (JWT-Key, PostgreSQL-Passwort).
+4. Fragt das Admin-Passwort ab (leer = spaeter in `.env` setzen).
+5. Gibt Port 80 in der Firewall (UFW/firewalld) frei, falls aktiv.
+6. Baut alle Images, startet PostgreSQL, wartet auf Health, startet Backend.
+7. Laedt das LLM-Modell in Ollama (kann mehrere Minuten dauern).
+8. Startet alle Container und testet `http://SERVER-IP/api/health`.
 
-When finished you will see a summary like:
+## Zugriff
+
+Nach der Installation im Browser:
 
 ```
-  URL:         http://localhost
-  Admin User:  admin
-  Logs:        docker compose logs -f
-  Backup:      bash backup.sh
+http://SERVER-IP
 ```
+
+Ohne Port. `SERVER-IP` ermittelt der Installer automatisch und gibt sie aus. Login: `admin` / dein Admin-Passwort.
+
+Zusaetzlich laeuft NEXUS auf dem Caddy Reverse Proxy an **Port 80**, der intern alle `/api/`-Requests an das Backend und alle anderen an das Frontend weiterleitet. Backend, PostgreSQL und Ollama sind **nicht** direkt aus dem Netzwerk erreichbar (keine Port-Veröffentlichung).
+
+> Optional spaeter via Domain + Cloudflare: Setze `NEXUS_DOMAIN` und nutze `config/Caddyfile.production`. Der lokale IP-Zugriff funktioniert unabhaengig davon, Cloudflare ist fuer den lokalen Zugriff **nicht** erforderlich.
+
+## Update
+
+```bash
+cd /opt/nexus
+sudo ./update.sh
+```
+
+Das Skript sichert die `.env`, macht `git pull`, baut neu, fuehrt Datenbankmigrationen aus, startet Container (`--force-recreate`, **keine** Volumes werden entfernt, Daten bleiben erhalten) und prueft den Healthcheck.
+
+## Rollback
+
+```bash
+cd /opt/nexus
+sudo ./rollback.sh
+```
+
+Setzt den letzten Git-Commit zurueck, stellt die `.env` aus dem letzten Update-Backup wieder her und startet die Container neu. **Es werden keine Datenbankdaten geloescht.**
+
+## Installationsort & Daten
+
+| Was | Wo |
+|-----|----|
+| Repository | `/opt/nexus` (bzw. der Ordner, in dem geklont wurde) |
+| Konfiguration | `/opt/nexus/.env` |
+| Datenbank (PostgreSQL) | Docker-Volume `nexus-postgres-data` |
+| LLM-Modelle (Ollama) | Docker-Volume `nexus-ollama-data` |
+| TLS-Zertifikate (Caddy) | Docker-Volumes `caddy-data`, `caddy-config` |
+
+Details siehe [Manual Installation](#manual-installation) und [Backup & Restore](#backup--restore).
 
 ---
 

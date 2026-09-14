@@ -1,234 +1,159 @@
 #!/bin/bash
-# =============================================================================
-# NEXUS - Installation Script
-# =============================================================================
-# Idempotent installer for the NEXUS platform.
-# Usage: sudo bash install.sh
-# =============================================================================
-
 set -euo pipefail
 
-# ---------------------------------------------------------------------------
-# Colors
-# ---------------------------------------------------------------------------
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
+info()  { echo -e "${CYAN}[INFO]${NC}  $1"; }
+ok()    { echo -e "${GREEN}[OK]${NC}    $1"; }
+warn()  { echo -e "${YELLOW}[WARN]${NC}  $1"; }
+error() { echo -e "${RED}[ERROR]${NC} $1"; }
+fatal() { error "$1"; exit 1; }
 
-info()    { echo -e "${CYAN}[INFO]${NC}  $1"; }
-ok()      { echo -e "${GREEN}[OK]${NC}    $1"; }
-warn()    { echo -e "${YELLOW}[WARN]${NC}  $1"; }
-error()   { echo -e "${RED}[ERROR]${NC} $1"; }
-fatal()   { error "$1"; exit 1; }
+if [[ $EUID -ne 0 ]]; then fatal "Als Root ausfuehren: sudo bash install.sh"; fi
+[[ "$(uname)" == "Linux" ]] || fatal "Nur Linux unterstuetzt."
+[[ "$(uname -m)" == "x86_64" ]] || fatal "Nur x86_64 unterstuetzt."
 
-# ---------------------------------------------------------------------------
-# Pre-flight checks
-# ---------------------------------------------------------------------------
-if [[ $EUID -ne 0 ]]; then
-    fatal "This script must be run as root. Use: sudo bash install.sh"
-fi
-
-if [[ "$(uname)" != "Linux" ]]; then
-    fatal "This script only supports Linux. Detected: $(uname)"
-fi
-
-ARCH="$(uname -m)"
-if [[ "$ARCH" != "x86_64" ]]; then
-    fatal "Only x86_64 architecture is supported. Detected: $ARCH"
-fi
-
-info "Pre-flight checks passed (root, Linux, x86_64)"
-
-# ---------------------------------------------------------------------------
-# Install Docker
-# ---------------------------------------------------------------------------
-if ! command -v docker &>/dev/null; then
-    info "Installing Docker..."
-    curl -fsSL https://get.docker.com | sh
-    systemctl enable docker
-    systemctl start docker
-    ok "Docker installed"
-else
-    ok "Docker already installed: $(docker --version)"
-fi
-
-# ---------------------------------------------------------------------------
-# Install Docker Compose plugin
-# ---------------------------------------------------------------------------
-if ! docker compose version &>/dev/null; then
-    info "Installing Docker Compose plugin..."
-    COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep -oP '"tag_name":\s*"\K[^"]+')
-    curl -L "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" \
-        -o /usr/local/bin/docker-compose
-    chmod +x /usr/local/bin/docker-compose
-    ok "Docker Compose installed"
-else
-    ok "Docker Compose already installed: $(docker compose version --short)"
-fi
-
-# ---------------------------------------------------------------------------
-# RAM check
-# ---------------------------------------------------------------------------
-TOTAL_RAM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
-TOTAL_RAM_MB=$((TOTAL_RAM_KB / 1024))
-if [[ $TOTAL_RAM_MB -lt 4096 ]]; then
-    warn "Only ${TOTAL_RAM_MB}MB RAM detected. Recommended: 4GB+"
-    warn "Nexus may run slowly with limited memory."
-else
-    ok "RAM check passed: ${TOTAL_RAM_MB}MB available"
-fi
-
-# ---------------------------------------------------------------------------
-# Project directory
-# ---------------------------------------------------------------------------
+SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+[[ -z "$SERVER_IP" ]] && SERVER_IP=$(ip -4 route get 8.8.8.8 2>/dev/null | awk '{print $7; exit}')
+[[ -z "$SERVER_IP" ]] && SERVER_IP="localhost"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# ---------------------------------------------------------------------------
-# .env setup
-# ---------------------------------------------------------------------------
-if [[ ! -f .env ]]; then
-    info "Creating .env from .env.example..."
-    cp .env.example .env
-    ok ".env created"
+# ---------- Docker ----------
+if ! command -v docker &>/dev/null; then
+    info "Docker installieren..."
+    curl -fsSL https://get.docker.com | sh
+    systemctl enable docker && systemctl start docker
+    ok "Docker installiert"
 else
-    ok ".env already exists"
+    ok "Docker: $(docker --version)"
 fi
 
-generate_secret() {
-    python3 -c "import secrets; print(secrets.token_urlsafe(48))" 2>/dev/null \
-        || openssl rand -base64 48 | tr -d '\n'
-}
+if ! docker compose version &>/dev/null; then
+    fatal "Docker Compose Plugin fehlt. Installiere es manuell."
+fi
+ok "Docker Compose: $(docker compose version --short)"
 
-# Generate SECRET_KEY if still default
+# ---------- RAM ----------
+TOTAL_RAM_MB=$(($(grep MemTotal /proc/meminfo | awk '{print $2}') / 1024))
+[[ $TOTAL_RAM_MB -lt 4096 ]] && warn "Nur ${TOTAL_RAM_MB}MB RAM (empfohlen: 4GB+)"
+
+# ---------- .env ----------
+if [[ ! -f .env ]]; then
+    cp .env.example .env
+    ok ".env erstellt"
+else
+    ok ".env existiert bereits"
+fi
+
+gen_secret() { python3 -c "import secrets;print(secrets.token_urlsafe(48))" 2>/dev/null || openssl rand -base64 48 | tr -d '\n'; }
+
 if grep -q "^NEXUS_SECRET_KEY=CHANGE_ME" .env; then
-    NEW_KEY=$(generate_secret)
-    sed -i "s|^NEXUS_SECRET_KEY=CHANGE_ME|NEXUS_SECRET_KEY=${NEW_KEY}|" .env
-    ok "Generated NEXUS_SECRET_KEY"
+    sed -i "s|^NEXUS_SECRET_KEY=CHANGE_ME|NEXUS_SECRET_KEY=$(gen_secret)|" .env
+    ok "SECRET_KEY generiert"
 fi
 
-# Generate POSTGRES_PASSWORD if still default
 if grep -q "^POSTGRES_PASSWORD=CHANGE_ME" .env; then
-    NEW_PASS=$(generate_secret)
-    sed -i "s|^POSTGRES_PASSWORD=CHANGE_ME|POSTGRES_PASSWORD=${NEW_PASS}|" .env
-    sed -i "s|^DATABASE_URL=postgresql+asyncpg://nexus:CHANGE_ME@postgres:5432/nexus|DATABASE_URL=postgresql+asyncpg://nexus:${NEW_PASS}@postgres:5432/nexus|" .env
-    ok "Generated POSTGRES_PASSWORD"
+    NEW_PG=$(gen_secret)
+    sed -i "s|^POSTGRES_PASSWORD=CHANGE_ME|POSTGRES_PASSWORD=${NEW_PG}|" .env
+    sed -i "s|nexus:CHANGE_ME@|nexus:${NEW_PG}@|" .env
+    ok "POSTGRES_PASSWORD generiert"
 fi
 
-# Prompt for admin password if not set
 ADMIN_PASS=$(grep "^FIRST_ADMIN_PASSWORD=" .env | cut -d'=' -f2-)
 if [[ -z "$ADMIN_PASS" ]]; then
-    warn "FIRST_ADMIN_PASSWORD is not set."
-    read -rp "Enter admin password (leave blank to skip): " ADMIN_PASS_INPUT
+    warn "FIRST_ADMIN_PASSWORD ist leer."
+    read -rp "Admin-Passwort eingeben (leer = ueberspringen): " ADMIN_PASS_INPUT
     if [[ -n "$ADMIN_PASS_INPUT" ]]; then
         sed -i "s|^FIRST_ADMIN_PASSWORD=.*|FIRST_ADMIN_PASSWORD=${ADMIN_PASS_INPUT}|" .env
-        ok "Admin password set"
-    else
-        warn "Admin password not set. You can set it in .env later."
+        ok "Admin-Passwort gesetzt"
     fi
 fi
 
-# ---------------------------------------------------------------------------
-# Load env vars for use in this script
-# set -a
-# source .env
-# set +a
+# ---------- Firewall ----------
+if command -v ufw &>/dev/null; then
+    if ufw status 2>/dev/null | grep -q "active"; then
+        if ! ufw status 2>/dev/null | grep -q "80/tcp.*ALLOW"; then
+            info "UFW: Port 80 freigeben..."
+            ufw allow 80/tcp comment "NEXUS HTTP" >/dev/null 2>&1
+            ok "Port 80 in UFW freigegeben"
+        else
+            ok "Port 80 ist bereits in UFW erlaubt"
+        fi
+    else
+        ok "UFW nicht aktiv - kein Eingriff noetig"
+    fi
+elif command -v firewall-cmd &>/dev/null; then
+    if firewall-cmd --state 2>/dev/null | grep -q "running"; then
+        firewall-cmd --permanent --add-port=80/tcp >/dev/null 2>&1 && firewall-cmd --reload >/dev/null 2>&1
+        ok "Firewalld: Port 80 freigegeben"
+    fi
+fi
 
-# ---------------------------------------------------------------------------
-# Build and start services
-# ---------------------------------------------------------------------------
-info "Pulling and building Docker images..."
-docker compose pull 2>/dev/null || docker-compose pull 2>/dev/null || true
-docker compose build 2>/dev/null || docker-compose build 2>/dev/null || true
-ok "Images built"
+# ---------- Build & Start ----------
+info "Docker-Images bauen..."
+docker compose build --no-cache 2>&1 | tail -1
+ok "Images gebaut"
 
-# ---------------------------------------------------------------------------
-# Start PostgreSQL first
-# ---------------------------------------------------------------------------
-info "Starting PostgreSQL..."
-docker compose up -d postgres 2>/dev/null || docker-compose up -d postgres 2>/dev/null
-
-info "Waiting for PostgreSQL to be healthy..."
+info "PostgreSQL starten..."
+docker compose up -d postgres 2>/dev/null
 RETRIES=30
 until docker inspect --format='{{.State.Health.Status}}' nexus-postgres 2>/dev/null | grep -q "healthy"; do
     RETRIES=$((RETRIES - 1))
-    if [[ $RETRIES -le 0 ]]; then
-        fatal "PostgreSQL failed to start within 60 seconds"
-    fi
-    echo -n "."
+    [[ $RETRIES -le 0 ]] && fatal "PostgreSQL startet nicht"
     sleep 2
 done
-echo ""
-ok "PostgreSQL is healthy"
+ok "PostgreSQL gesund"
 
-# ---------------------------------------------------------------------------
-# Start backend and run migrations
-# ---------------------------------------------------------------------------
-info "Starting backend..."
-docker compose up -d nexus-backend 2>/dev/null || docker-compose up -d nexus-backend 2>/dev/null
-sleep 5
-ok "Backend started"
+info "Backend starten..."
+docker compose up -d nexus-backend 2>/dev/null
+sleep 3
+ok "Backend gestartet"
 
-# ---------------------------------------------------------------------------
-# Start Ollama and pull model
-# ---------------------------------------------------------------------------
-info "Starting Ollama..."
-docker compose up -d ollama 2>/dev/null || docker-compose up -d ollama 2>/dev/null
-
+info "Ollama starten..."
+docker compose up -d ollama 2>/dev/null
+sleep 2
 MODEL=$(grep "^NEXUS_LLM_MODEL=" .env | cut -d'=' -f2-)
 MODEL=${MODEL:-qwen3:8b}
-info "Pulling LLM model: $MODEL (this may take a while)..."
-docker exec nexus-ollama ollama pull "$MODEL" || warn "Failed to pull model $MODEL"
-ok "Ollama ready"
+info "Modell '$MODEL' wird geladen (kann dauern)..."
+docker exec nexus-ollama ollama pull "$MODEL" >/dev/null 2>&1 || warn "Modell-Pull fehlgeschlagen"
+ok "Ollama bereit"
 
-# ---------------------------------------------------------------------------
-# Start all services
-# ---------------------------------------------------------------------------
-info "Starting all services..."
-docker compose up -d 2>/dev/null || docker-compose up -d 2>/dev/null
-ok "All services started"
+info "Alle Services starten..."
+docker compose up -d 2>/dev/null
+ok "Alle Services gestartet"
 
-# ---------------------------------------------------------------------------
-# Health check
-# ---------------------------------------------------------------------------
-info "Running health check (up to 60 seconds)..."
+# ---------- Healthcheck ----------
+info "Healthcheck (bis zu 60s)..."
 HEALTHY=false
 for i in $(seq 1 30); do
-    if curl -sf http://localhost/api/health &>/dev/null; then
-        HEALTHY=true
-        break
-    fi
-    echo -n "."
+    if curl -sf "http://localhost/api/health" >/dev/null 2>&1; then HEALTHY=true; break; fi
     sleep 2
 done
-echo ""
 
-if $HEALTHY; then
-    ok "NEXUS is healthy and running!"
-else
-    warn "Health check did not pass within 60 seconds."
-    warn "Services may still be starting. Check: docker compose logs"
-fi
-
-# ---------------------------------------------------------------------------
-# Summary
-# ---------------------------------------------------------------------------
-ADMIN_USER=$(grep "^FIRST_ADMIN_USERNAME=" .env | cut -d'=' -f2-)
-ADMIN_USER=${ADMIN_USER:-admin}
+# ---------- Status ----------
+STATUS_FRONTEND="FAIL"; STATUS_BACKEND="FAIL"; STATUS_DB="FAIL"; STATUS_OLLAMA="FAIL"; STATUS_PROXY="FAIL"
+curl -sf "http://localhost/" >/dev/null 2>&1 && STATUS_FRONTEND="OK"
+curl -sf "http://localhost/api/health" >/dev/null 2>&1 && STATUS_BACKEND="OK"
+docker exec nexus-postgres pg_isready -U nexus -d nexus >/dev/null 2>&1 && STATUS_DB="OK"
+docker exec nexus-ollama ollama list >/dev/null 2>&1 && STATUS_OLLAMA="OK"
+docker inspect --format='{{.State.Status}}' nexus-caddy 2>/dev/null | grep -q "running" && STATUS_PROXY="OK"
 
 echo ""
-echo -e "${GREEN}============================================================${NC}"
-echo -e "${GREEN}  NEXUS Installation Complete!${NC}"
-echo -e "${GREEN}============================================================${NC}"
+echo -e "${GREEN}========================================${NC}"
+echo -e "${GREEN}  NEXUS Installation abgeschlossen${NC}"
+echo -e "${GREEN}========================================${NC}"
 echo ""
-echo -e "  URL:         ${CYAN}http://localhost${NC}"
-echo -e "  Admin User:  ${CYAN}${ADMIN_USER}${NC}"
+echo -e "  NEXUS:    ${CYAN}http://${SERVER_IP}${NC}"
+echo -e "  API:      ${CYAN}http://${SERVER_IP}/api/health${NC}"
 echo ""
-echo -e "  Logs:        ${CYAN}docker compose logs -f${NC}"
-echo -e "  Stop:        ${CYAN}docker compose down${NC}"
-echo -e "  Start:       ${CYAN}docker compose up -d${NC}"
-echo -e "  Backup:      ${CYAN}bash backup.sh${NC}"
+echo -e "  Frontend: ${STATUS_FRONTEND}"
+echo -e "  Backend:  ${STATUS_BACKEND}"
+echo -e "  Database: ${STATUS_DB}"
+echo -e "  Ollama:   ${STATUS_OLLAMA}"
+echo -e "  Proxy:    ${STATUS_PROXY}"
 echo ""
-echo -e "${GREEN}============================================================${NC}"
+echo -e "  Login:    ${CYAN}admin${NC} / dein eingegebenes Passwort"
+echo -e "  Update:   ${CYAN}sudo ./update.sh${NC}"
+echo -e "  Rollback: ${CYAN}sudo ./rollback.sh${NC}"
+echo ""
+echo -e "${GREEN}========================================${NC}"
