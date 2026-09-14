@@ -1,4 +1,17 @@
 #!/bin/bash
+# =============================================================================
+# NEXUS - Installation Script
+# =============================================================================
+# Usage: sudo bash install.sh
+#
+# - Installs/starts all NEXUS services (frontend, backend, PostgreSQL, Ollama, Caddy).
+# - NEVER deletes Docker volumes. If a PostgreSQL volume already exists, the
+#   existing data is used (upgrade path). A fresh database is only created when
+#   no volume exists.
+# - Includes a disk-space check. Only an unused Docker build cache is pruned
+#   automatically when free space is low - volumes are never touched.
+# =============================================================================
+
 set -euo pipefail
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -8,6 +21,31 @@ warn()  { echo -e "${YELLOW}[WARN]${NC}  $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1"; }
 fatal() { error "$1"; exit 1; }
 
+# -----------------------------------------------------------------------------
+# Storage helpers
+# -----------------------------------------------------------------------------
+MIN_FREE_GB=3
+
+free_gb() {
+    df -Pk / | awk 'NR==2 {print int($4/1024/1024)}'
+}
+
+safe_cleanup_build_cache() {
+    local avail
+    avail=$(free_gb)
+    if (( avail < MIN_FREE_GB )); then
+        warn "Nur ${avail}GB frei. Entferne ausschliesslich den ungenutzten Docker-Build-Cache..."
+        if docker builder prune -af >/dev/null 2>&1; then
+            ok "Build-Cache bereinigt"
+        else
+            warn "Build-Cache-Bereinigung fehlgeschlagen"
+        fi
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# Prerequisites
+# -----------------------------------------------------------------------------
 if [[ $EUID -ne 0 ]]; then fatal "Als Root ausfuehren: sudo bash install.sh"; fi
 [[ "$(uname)" == "Linux" ]] || fatal "Nur Linux unterstuetzt."
 [[ "$(uname -m)" == "x86_64" ]] || fatal "Nur x86_64 unterstuetzt."
@@ -17,6 +55,8 @@ SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 [[ -z "$SERVER_IP" ]] && SERVER_IP="localhost"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
+
+info "Server-IP: ${SERVER_IP}"
 
 # ---------- Docker ----------
 if ! command -v docker &>/dev/null; then
@@ -37,6 +77,22 @@ ok "Docker Compose: $(docker compose version --short)"
 TOTAL_RAM_MB=$(($(grep MemTotal /proc/meminfo | awk '{print $2}') / 1024))
 [[ $TOTAL_RAM_MB -lt 4096 ]] && warn "Nur ${TOTAL_RAM_MB}MB RAM (empfohlen: 4GB+)"
 
+# ---------- Disk check (before build) ----------
+info "Speicherpruefung..."
+CURRENT_FREE=$(free_gb)
+if (( CURRENT_FREE < MIN_FREE_GB )); then
+    info "Freier Speicher: ${CURRENT_FREE}GB (Minimum: ${MIN_FREE_GB}GB)"
+    safe_cleanup_build_cache
+    CURRENT_FREE=$(free_gb)
+    if (( CURRENT_FREE < MIN_FREE_GB )); then
+        fatal "Nach Bereinigung weiterhin nur ${CURRENT_FREE}GB frei. Bitte manuell pruefen:
+  docker system df
+  docker image prune -af        (entfernt unbenutzte Images - beruehrt KEINE Volumes)
+  docker logs --tail 50 <container>  (Log-Overflow pruefen)"
+    fi
+fi
+ok "Freier Speicher: ${CURRENT_FREE}GB"
+
 # ---------- .env ----------
 if [[ ! -f .env ]]; then
     cp .env.example .env
@@ -48,13 +104,13 @@ fi
 gen_secret() { python3 -c "import secrets;print(secrets.token_urlsafe(48))" 2>/dev/null || openssl rand -base64 48 | tr -d '\n'; }
 
 if grep -q "^NEXUS_SECRET_KEY=CHANGE_ME" .env; then
-    sed -i "s|^NEXUS_SECRET_KEY=CHANGE_ME|NEXUS_SECRET_KEY=$(gen_secret)|" .env
+    sed -i "s|^NEXUS_SECRET_KEY=CHANGE_ME.*|NEXUS_SECRET_KEY=$(gen_secret)|" .env
     ok "SECRET_KEY generiert"
 fi
 
 if grep -q "^POSTGRES_PASSWORD=CHANGE_ME" .env; then
     NEW_PG=$(gen_secret)
-    sed -i "s|^POSTGRES_PASSWORD=CHANGE_ME|POSTGRES_PASSWORD=${NEW_PG}|" .env
+    sed -i "s|^POSTGRES_PASSWORD=CHANGE_ME.*|POSTGRES_PASSWORD=${NEW_PG}|" .env
     sed -i "s|nexus:CHANGE_ME@|nexus:${NEW_PG}@|" .env
     ok "POSTGRES_PASSWORD generiert"
 fi
@@ -87,15 +143,24 @@ elif command -v firewall-cmd &>/dev/null; then
         firewall-cmd --permanent --add-port=80/tcp >/dev/null 2>&1 && firewall-cmd --reload >/dev/null 2>&1
         ok "Firewalld: Port 80 freigegeben"
     fi
+else
+    info "Keine Firewall erkannt oder Firewall-Skript nicht verfuegbar."
+fi
+
+# ---------- Volume detection (NEVER delete data) ----------
+if docker volume inspect nexus-postgres-data >/dev/null 2>&1; then
+    info "PostgreSQL-Volume existiert -> bestehende Daten werden verwendet (keine Initialisierung)."
+else
+    info "Kein PostgreSQL-Volume vorhanden -> Datenbank wird bei erstem Start initialisiert."
 fi
 
 # ---------- Build & Start ----------
-info "Docker-Images bauen..."
-docker compose build --no-cache 2>&1 | tail -1
+info "Docker-Images bauen (mit Cache - keine neuen Layer wenn unveraendert)..."
+docker compose build 2>&1 | tail -1
 ok "Images gebaut"
 
 info "PostgreSQL starten..."
-docker compose up -d postgres 2>/dev/null
+docker compose up -d postgres 2>/dev/null || true
 RETRIES=30
 until docker inspect --format='{{.State.Health.Status}}' nexus-postgres 2>/dev/null | grep -q "healthy"; do
     RETRIES=$((RETRIES - 1))
@@ -104,14 +169,22 @@ until docker inspect --format='{{.State.Health.Status}}' nexus-postgres 2>/dev/n
 done
 ok "PostgreSQL gesund"
 
-info "Backend starten..."
-docker compose up -d nexus-backend 2>/dev/null
-sleep 3
-ok "Backend gestartet"
-
 info "Ollama starten..."
-docker compose up -d ollama 2>/dev/null
+docker compose up -d ollama 2>/dev/null || true
 sleep 2
+
+info "Backend starten..."
+docker compose up -d nexus-backend 2>/dev/null || true
+
+info "Datenbank-Schema synchronisieren..."
+if docker exec nexus-backend python -m alembic upgrade head >/dev/null 2>&1; then
+    ok "Migrationen angewendet"
+elif docker exec nexus-backend python -m alembic stamp head >/dev/null 2>&1; then
+    ok "Migration-Stand markiert"
+else
+    warn "Alembic nicht gestartet - Backend erstellt Schema automatisch (create_all)."
+fi
+
 MODEL=$(grep "^NEXUS_LLM_MODEL=" .env | cut -d'=' -f2-)
 MODEL=${MODEL:-qwen3:8b}
 info "Modell '$MODEL' wird geladen (kann dauern)..."
@@ -119,7 +192,7 @@ docker exec nexus-ollama ollama pull "$MODEL" >/dev/null 2>&1 || warn "Modell-Pu
 ok "Ollama bereit"
 
 info "Alle Services starten..."
-docker compose up -d 2>/dev/null
+docker compose up -d 2>/dev/null || true
 ok "Alle Services gestartet"
 
 # ---------- Healthcheck ----------
@@ -154,6 +227,14 @@ echo -e "  Proxy:    ${STATUS_PROXY}"
 echo ""
 echo -e "  Login:    ${CYAN}admin${NC} / dein eingegebenes Passwort"
 echo -e "  Update:   ${CYAN}sudo ./update.sh${NC}"
-echo -e "  Rollback: ${CYAN}sudo ./rollback.sh${NC}"
+echo -e "  Repair:   ${CYAN}sudo ./repair.sh${NC}"
 echo ""
 echo -e "${GREEN}========================================${NC}"
+
+if [[ "$HEALTHY" != "true" ]]; then
+    echo ""
+    warn "Backend ist nicht erreichbar. Diagnose:"
+    echo "  docker compose logs nexus-backend --tail 30"
+    echo "  docker compose ps"
+    echo "  sudo ./repair.sh"
+fi

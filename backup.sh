@@ -61,6 +61,19 @@ else
     warn "PostgreSQL container not found. Skipping database dump."
 fi
 
+# --- Disk space check ---
+BACKUP_FREE_KB=$(df -Pk . | awk 'NR==2 {print $4}')
+BACKUP_FREE_GB=$((BACKUP_FREE_KB / 1024 / 1024))
+db_size_mb=0
+if docker exec nexus-postgres psql -U "${POSTGRES_USER:-nexus}" -d "${POSTGRES_DB:-nexus}" -Atc "SELECT pg_database_size('${POSTGRES_DB:-nexus}')/1024/1024;" >/tmp/nexus_dbsize 2>/dev/null; then
+    db_size_mb=$(cat /tmp/nexus_dbsize 2>/dev/null || echo 0)
+fi
+rm -f /tmp/nexus_dbsize
+if (( BACKUP_FREE_GB < 1 )) || (( BACKUP_FREE_GB * 1024 < db_size_mb )); then
+    warn "Wenig Speicher fuer Backup (${BACKUP_FREE_GB}GB frei, DB ca. ${db_size_mb}MB)."
+    warn "Backup wird fortgesetzt - pruefe danach: df -h ."
+fi
+
 # --- .env ---
 info "Backing up .env file..."
 cp .env "${BACKUP_PATH}/.env"
@@ -71,6 +84,17 @@ info "Backing up Docker Compose files..."
 cp docker-compose.yml "${BACKUP_PATH}/" 2>/dev/null || true
 cp docker-compose.prod.yml "${BACKUP_PATH}/" 2>/dev/null || true
 ok "Docker Compose files backed up"
+
+# --- Caddyfile ---
+info "Backing up Caddyfile..."
+cp docker/Caddyfile "${BACKUP_PATH}/Caddyfile" 2>/dev/null || true
+ok "Caddyfile backed up"
+
+# --- Dockerfiles ---
+info "Backing up Dockerfiles..."
+cp backend/Dockerfile "${BACKUP_PATH}/backend-Dockerfile" 2>/dev/null || true
+cp frontend/Dockerfile "${BACKUP_PATH}/frontend-Dockerfile" 2>/dev/null || true
+ok "Dockerfiles backed up"
 
 # --- Config directory ---
 info "Backing up config directory..."

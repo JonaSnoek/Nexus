@@ -14,7 +14,7 @@ from app.core.config import settings
 from app.core.database import Base
 from app.models import (  # noqa: F401
     User, UserRole, Permission, UserPermission, Usage,
-    Chat, Message, MessageRole, AuditLog,
+    Chat, Message, MessageRole, AuditLog, SystemSetting,
 )
 
 config = context.config

@@ -50,16 +50,18 @@ cd Nexus
 sudo ./install.sh
 ```
 
-Der Installer ist **idempotent** (mehrfaches Ausfuehren ist sicher). Er:
+Der Installer ist **idempotent** (mehrfaches Ausfuehren ist sicher) und **daten-erhaltend**. Er:
 
 1. Prueft Root-Rechte, Linux und x86_64.
-2. Installiert Docker und Docker Compose falls fehlend.
-3. Erstellt `.env` aus `.env.example` und generiert starke Secrets (JWT-Key, PostgreSQL-Passwort).
-4. Fragt das Admin-Passwort ab (leer = spaeter in `.env` setzen).
-5. Gibt Port 80 in der Firewall (UFW/firewalld) frei, falls aktiv.
-6. Baut alle Images, startet PostgreSQL, wartet auf Health, startet Backend.
-7. Laedt das LLM-Modell in Ollama (kann mehrere Minuten dauern).
-8. Startet alle Container und testet `http://SERVER-IP/api/health`.
+2. Prueft den Speicherplatz (`df /`). Sind weniger als 3 GB frei, wird nur der **ungenutzte Docker-Build-Cache** entfernt (`docker builder prune -af`). **Es werden niemals Volumes geloescht.**
+3. Installiert Docker und Docker Compose falls fehlend.
+4. Erstellt `.env` aus `.env.example` und generiert starke Secrets (JWT-Key, PostgreSQL-Passwort).
+5. Fragt das Admin-Passwort ab (leer = spaeter in `.env` setzen).
+6. Gibt Port 80 in der Firewall (UFW/firewalld) frei, falls aktiv.
+7. Erkennt das PostgreSQL-Volume: **existiert es bereits, werden die bestehenden Daten verwendet**; eine neue Datenbank wird nur initialisiert, wenn kein Volume existiert.
+8. Baut die Images (mit Docker-Cache – kein `--no-cache`), startet PostgreSQL, wartet auf Health, synchronisiert das Datenbank-Schema (Alembic), startet Backend.
+9. Laedt das LLM-Modell in Ollama (kann mehrere Minuten dauern).
+10. Startet alle Container und testet `http://SERVER-IP/api/health`.
 
 ## Zugriff
 
@@ -73,7 +75,9 @@ Ohne Port. `SERVER-IP` ermittelt der Installer automatisch und gibt sie aus. Log
 
 Zusaetzlich laeuft NEXUS auf dem Caddy Reverse Proxy an **Port 80**, der intern alle `/api/`-Requests an das Backend und alle anderen an das Frontend weiterleitet. Backend, PostgreSQL und Ollama sind **nicht** direkt aus dem Netzwerk erreichbar (keine Port-Veröffentlichung).
 
-> Optional spaeter via Domain + Cloudflare: Setze `NEXUS_DOMAIN` und nutze `config/Caddyfile.production`. Der lokale IP-Zugriff funktioniert unabhaengig davon, Cloudflare ist fuer den lokalen Zugriff **nicht** erforderlich.
+> **Benötigte Ports:** nur **80** (HTTP). **443** wird nur geoeffnet, wenn du spaeter HTTPS via `config/Caddyfile.production` aktivierst. Keine weiteren Ports werden nach aussen veroeffentlicht.
+
+> Optional spaeter via Domain + **Cloudflare Tunnel**: Cloudflare Tunnel benoetigt keinen offenen Port und kein Cloudflare-Plugin im NEXUS-Container. Tunnel einfach auf den Server-Port 80 (oder 443) zeigen lassen (z.B. `cloudflared tunnel --url http://localhost`). Die lokale IP-Version `http://SERVER-IP` funktioniert dabei **unabhaengig** von Cloudflare weiter.
 
 ## Update
 
@@ -82,7 +86,44 @@ cd /opt/nexus
 sudo ./update.sh
 ```
 
-Das Skript sichert die `.env`, macht `git pull`, baut neu, fuehrt Datenbankmigrationen aus, startet Container (`--force-recreate`, **keine** Volumes werden entfernt, Daten bleiben erhalten) und prueft den Healthcheck.
+Das Skript:
+
+1. Prueft den Speicherplatz (entfernt bei Bedarf automatisch nur den ungenutzten Docker-Build-Cache).
+2. Sichert die `.env` als `.env.bak-<Zeitstempel>`.
+3. Fuehrt `git pull` aus.
+4. Baut und startet Container via `docker compose up -d --build` – **es werden niemals Volumes entfernt** (`docker compose down -v` wird nie verwendet), Chatverlaeufe, Benutzer, Einstellungen und Datenbank bleiben erhalten.
+5. Fuehrt Datenbankmigrationen aus (`alembic upgrade head`; bei bereits aktueller DB nur `stamp head`).
+6. Waertet Healthchecks ab und prueft, ob NEXUS wieder erreichbar ist.
+7. Schlaegt das Update fehl, wird automatisch auf den vorherigen Commit zurueckgesetzt und neu gestartet.
+
+## Reparatur
+
+```bash
+cd /opt/nexus
+sudo ./repair.sh
+```
+
+Diagnostiziert und repariert eine bestehende Installation **ohne Daten zu loeschen**:
+
+- Speicher, Docker, Compose-Datei und Container-Status pruefen.
+- PostgreSQL prüfen und das PostgreSQL-Volume identifizieren (bestehende Daten bleiben unangetastet).
+- Bei Speichermangel nur den ungefaehrlichen Docker-Build-Cache bereinigen.
+- NEXUS starten und Healthchecks + Port-80-Pruefung durchfuehren.
+
+Beispielausgabe:
+
+```
+  Disk:        OK
+  Docker:      OK
+  Compose:     OK
+  PostgreSQL:  OK
+  Backend:     OK
+  Frontend:    OK
+  Ollama:      OK
+  HTTP (Port 80): OK
+
+  NEXUS:       http://192.168.2.100
+```
 
 ## Rollback
 
@@ -93,6 +134,15 @@ sudo ./rollback.sh
 
 Setzt den letzten Git-Commit zurueck, stellt die `.env` aus dem letzten Update-Backup wieder her und startet die Container neu. **Es werden keine Datenbankdaten geloescht.**
 
+## Installation: Speicher & Ports
+
+| Anforderung | Minimum |
+|-------------|---------|
+| Speicher (`df /`) | min. **3 GB frei** vor Installation/Update |
+| Ports | **80** (HTTP). 443 nur fuer spaetere HTTPS-Domain |
+| Docker-Build-Cache | wird **nur** bei Speichermangel automatisch bereinigt (`docker builder prune -af`) |
+| Gefaehrliche Befehle | `docker compose down -v`, `docker system prune --volumes`, `docker volume rm` - **werden nie automatisch ausgefuehrt** |
+
 ## Installationsort & Daten
 
 | Was | Wo |
@@ -102,6 +152,9 @@ Setzt den letzten Git-Commit zurueck, stellt die `.env` aus dem letzten Update-B
 | Datenbank (PostgreSQL) | Docker-Volume `nexus-postgres-data` |
 | LLM-Modelle (Ollama) | Docker-Volume `nexus-ollama-data` |
 | TLS-Zertifikate (Caddy) | Docker-Volumes `caddy-data`, `caddy-config` |
+| Backups | `/opt/nexus/backups/` (Host-Dateisystem, **nicht** in einem Docker-Volume) |
+
+**Wichtig:** Die Docker-Volumes enthalten alle Ihre Daten. Der normale Update-/Repair-Prozess fasst sie niemals an. Ein Backup ist daher der einzige Weg, Daten dauerhaft zu sichern (siehe [Backup & Restore](#backup--restore)).
 
 Details siehe [Manual Installation](#manual-installation) und [Backup & Restore](#backup--restore).
 
@@ -747,6 +800,29 @@ docker compose up -d
 ```
 
 **Frontend returns 502?** The frontend waits for the backend's healthcheck. Give it a few seconds, then `docker compose ps` — if the backend is `unhealthy`, check its logs.
+
+### Disk full / No space left on device
+
+Symptom: `FATAL: could not write lock file "postmaster.pid"`, container restart loops, `docker compose up` fails mid-build.
+
+**1. Diagnose:**
+```bash
+df -h /
+docker system df
+```
+
+**2. Gefahrlos bereinigen (beruehrt KEINE Daten):**
+```bash
+docker builder prune -af        # nur ungenutzter Build-Cache
+docker image prune -af          # nur unbenutzte/dangling Images
+```
+
+**3. Reparieren und pruefen:**
+```bash
+sudo ./repair.sh                # bereinigt Build-Cache, startet Stack, Healthchecks
+```
+
+**Niemals** `docker compose down -v`, `docker system prune --volumes` oder `docker volume rm` verwenden - das wuerde die Datenbank und die Chatverlaeufe loeschen.
 
 ### Database connection failed
 
