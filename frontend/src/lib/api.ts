@@ -9,6 +9,8 @@ import type {
   ChatUpdate,
   Message,
   Usage,
+  UsageEvent,
+  UsageSummary,
   AuditLog,
   DashboardStats,
   SystemInfo,
@@ -19,6 +21,8 @@ import type {
   Permission,
   SsoSettings,
   DefaultLimits,
+  UpdateLimitsRequest,
+  UserLimits,
 } from "../types";
 
 const API_URL = (import.meta as any).env?.VITE_API_URL || "";
@@ -33,6 +37,23 @@ export function setToken(token: string): void {
 
 export function clearToken(): void {
   localStorage.removeItem("nexus_token");
+}
+
+function extractErrorMessage(body: unknown): string | null {
+  if (!body || typeof body !== "object") return null;
+  const detail = (body as any).detail;
+  if (typeof detail === "string") return detail;
+  if (detail && typeof detail === "object") {
+    if (typeof detail.message === "string") return detail.message;
+    if (detail.error_code === "LIMIT_REACHED") {
+      const label = detail.action_type === "IMAGE_GENERATION" ? "Bildgenerierung" : "Nachricht";
+      const cost = detail.cost ?? 0;
+      const remaining = detail.remaining ?? 0;
+      return `Limit erreicht: Für diese ${label} werden ${cost} Token benötigt, dir stehen aber nur noch ${remaining} zur Verfügung.`;
+    }
+  }
+  if (typeof (body as any).message === "string") return (body as any).message;
+  return null;
 }
 
 async function request<T>(
@@ -64,7 +85,7 @@ async function request<T>(
     let message = "An error occurred";
     try {
       const body = await response.json();
-      message = body.detail || body.message || message;
+      message = extractErrorMessage(body) || message;
     } catch {
       message = response.statusText || message;
     }
@@ -144,12 +165,28 @@ export async function updateUserPermissions(
 
 export async function updateUserLimits(
   userId: string | number,
-  data: { monthly_token_limit: number; monthly_message_limit: number }
+  data: UpdateLimitsRequest
 ): Promise<void> {
   return request<void>(`/api/users/${userId}/limits`, {
     method: "PUT",
     body: JSON.stringify(data),
   });
+}
+
+export async function getUserLimitsConfig(userId: string | number): Promise<UserLimits> {
+  return request<UserLimits>(`/api/admin/users/${userId}/limits`);
+}
+
+export async function getUserUsageEvents(
+  userId: string | number,
+  limit?: number
+): Promise<UsageEvent[]> {
+  const qs = limit ? `?limit=${limit}` : "";
+  return request<UsageEvent[]>(`/api/users/${userId}/usage/events${qs}`);
+}
+
+export async function getUsageSummary(): Promise<UsageSummary> {
+  return request<UsageSummary>("/api/admin/usage/summary");
 }
 
 export async function getUserUsage(userId: string | number): Promise<Usage[]> {
@@ -220,13 +257,22 @@ export async function* sendMessageStream(
 
   if (!response.ok) {
     let message = "Failed to send message";
+    let code: string | undefined;
     try {
       const body = await response.json();
-      message = body.detail || body.message || message;
+      message = extractErrorMessage(body) || message;
+      if (body && typeof body === "object") {
+        const detail = (body as any).detail;
+        if (detail && typeof detail === "object" && typeof detail.error_code === "string") {
+          code = detail.error_code;
+        }
+      }
     } catch {
       message = response.statusText || message;
     }
-    throw new Error(message);
+    const error = new Error(message) as Error & { code?: string };
+    error.code = code;
+    throw error;
   }
 
   if (!response.body) {
@@ -334,7 +380,9 @@ export async function getMyUsage(): Promise<Usage> {
     period: me.period,
     tokens_used: me.tokens_used_month,
     messages_used: me.messages_used_month,
-    token_limit: me.monthly_token_limit,
+    token_limit: me.unlimited
+      ? -1
+      : me.effective_token_limit ?? me.monthly_token_limit,
     message_limit: me.monthly_message_limit,
   };
 }

@@ -34,9 +34,19 @@ class User(Base):
     monthly_token_limit = Column(Integer, default=100000, nullable=False)
     monthly_message_limit = Column(Integer, default=1000, nullable=False)
 
+    # Server-enforced limits system.
+    # - limits_exempt: user is excluded from the global standard limit.
+    # - custom_monthly_token_limit: explicit per-user limit (only used when
+    #   limits_exempt is True and unlimited is False).
+    # - unlimited: user is never blocked by the quota, usage is still tracked.
+    limits_exempt = Column(Boolean, default=False, nullable=False)
+    custom_monthly_token_limit = Column(Integer, nullable=True)
+    unlimited = Column(Boolean, default=False, nullable=False)
+
     permissions = relationship("UserPermission", back_populates="user", cascade="all, delete-orphan")
     chats = relationship("Chat", back_populates="user", cascade="all, delete-orphan")
     usage_records = relationship("Usage", back_populates="user", cascade="all, delete-orphan")
+    usage_events = relationship("UsageEvent", back_populates="user", cascade="all, delete-orphan")
     audit_logs = relationship("AuditLog", back_populates="user")
 
 
@@ -73,6 +83,27 @@ class Usage(Base):
     messages_used = Column(Integer, default=0, nullable=False)
 
     user = relationship("User", back_populates="usage_records")
+
+
+class UsageEvent(Base):
+    """Granular usage ledger entry (one row per charged action).
+
+    ``tokens`` are NEXUS internal quota units (see the settings action costs),
+    NOT necessarily the token counters of the underlying LLM provider.
+    ``period`` is the billing period (YYYY-MM) the charge belongs to.
+    """
+
+    __tablename__ = "usage_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    action_type = Column(String(50), nullable=False, index=True)
+    tokens = Column(Integer, default=0, nullable=False)
+    period = Column(String(7), nullable=False, index=True)
+    details = Column("metadata", Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    user = relationship("User", back_populates="usage_events")
 
 
 class SystemSetting(Base):

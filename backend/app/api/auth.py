@@ -173,5 +173,12 @@ async def get_me(
         "messages_used_month": usage["messages_used_month"],
         "tokens_remaining_month": usage["tokens_remaining_month"],
         "messages_remaining_month": usage["messages_remaining_month"],
+        "limits_exempt": usage.get("limits_exempt", False),
+        "custom_monthly_token_limit": usage.get("custom_monthly_token_limit"),
+        "unlimited": usage.get("unlimited", False),
+        "has_token_limit": usage.get("has_token_limit", True),
+        "effective_token_limit": usage.get("effective_token_limit"),
+        "tokens_remaining": usage.get("tokens_remaining"),
+        "used_percent": usage.get("used_percent"),
         "permissions": permissions,
     }

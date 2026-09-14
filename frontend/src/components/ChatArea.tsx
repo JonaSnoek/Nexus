@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { Send, Square, Sparkles, StopCircle } from "lucide-react";
+import { Send, Square, Sparkles, StopCircle, AlertCircle, AlertTriangle } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 import type { Message, ChatResponse } from "../types";
 import { getChat, sendMessageStream, createChat, updateChat } from "../lib/api";
@@ -19,6 +19,7 @@ export default function ChatArea({ chatId, onChatCreated }: ChatAreaProps) {
   const [streaming, setStreaming] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [errorKind, setErrorKind] = useState<"error" | "limit">("error");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const streamingContentRef = useRef("");
@@ -37,12 +38,14 @@ export default function ChatArea({ chatId, onChatCreated }: ChatAreaProps) {
     } else {
       setMessages([]);
       setError(null);
+      setErrorKind("error");
     }
   }, [chatId]);
 
   async function loadChat(id: string) {
     setLoading(true);
     setError(null);
+    setErrorKind("error");
     try {
       const data: ChatResponse = await getChat(id);
       setMessages(data.messages || []);
@@ -84,6 +87,7 @@ export default function ChatArea({ chatId, onChatCreated }: ChatAreaProps) {
   async function handleSendWithId(targetChatId: string, content: string) {
     setInput("");
     setError(null);
+    setErrorKind("error");
 
     const userMessage: Message = {
       id: "temp-" + Date.now(),
@@ -101,16 +105,16 @@ export default function ChatArea({ chatId, onChatCreated }: ChatAreaProps) {
     setStreaming(true);
     streamingContentRef.current = "";
 
+    const assistantMessage: Message = {
+      id: "streaming-" + Date.now(),
+      role: "assistant",
+      content: "",
+      tokens: 0,
+      created_at: new Date().toISOString(),
+    };
+
     try {
       const stream = sendMessageStream(targetChatId, content);
-
-      const assistantMessage: Message = {
-        id: "streaming-" + Date.now(),
-        role: "assistant",
-        content: "",
-        tokens: 0,
-        created_at: new Date().toISOString(),
-      };
 
       setMessages((prev) => [...prev, assistantMessage]);
 
@@ -138,7 +142,17 @@ export default function ChatArea({ chatId, onChatCreated }: ChatAreaProps) {
     } catch (err: any) {
       if (err.message !== "Unauthorized") {
         setError(err.message || "Failed to get response");
+        if (err.code === "LIMIT_REACHED") {
+          setErrorKind("limit");
+        }
       }
+      // The backend rejected/rolled back the optimistic messages (e.g. quota
+      // exhausted), so restore the actually persisted state.
+      setMessages((prev) =>
+        prev.filter(
+          (m) => m.id !== userMessage.id && m.id !== assistantMessage.id
+        )
+      );
     } finally {
       setStreaming(false);
       streamingContentRef.current = "";
@@ -227,8 +241,19 @@ export default function ChatArea({ chatId, onChatCreated }: ChatAreaProps) {
               )}
 
             {error && (
-              <div className="mt-4 rounded-lg border border-red-500/20 bg-red-500/5 px-4 py-3 text-sm text-red-400">
-                {error}
+              <div
+                className={`mt-4 flex items-start gap-2 rounded-lg border px-4 py-3 text-sm ${
+                  errorKind === "limit"
+                    ? "border-yellow-500/30 bg-yellow-500/10 text-yellow-300"
+                    : "border-red-500/20 bg-red-500/5 text-red-400"
+                }`}
+              >
+                {errorKind === "limit" ? (
+                  <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                ) : (
+                  <AlertCircle size={14} className="mt-0.5 shrink-0" />
+                )}
+                <span>{error}</span>
               </div>
             )}
 

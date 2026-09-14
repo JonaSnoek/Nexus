@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import get_current_active_user
-from app.models.user import User, UserRole, AuditLog, Chat, Message
+from app.models.user import User, UserRole, AuditLog, Chat, Message, Usage, UsageEvent
 from app.schemas.system import (
     SystemInfoResponse,
     SsoSettingsResponse,
@@ -16,13 +16,15 @@ from app.schemas.system import (
     DefaultLimitsResponse,
     DefaultLimitsUpdate,
 )
+from app.schemas.user import UserLimitsResponse
 from app.providers.ollama import OllamaProvider
 from app.services.settings_service import (
     get_sso_settings,
     apply_sso_update,
-    get_default_limits,
+    get_limits_config,
     apply_limits_update,
 )
+from app.services.user_service import get_user_by_id, usage_view_for_user, CURRENT_PERIOD
 from app.services.audit_service import log_action
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -295,7 +297,7 @@ async def get_limit_config(
 ):
     if current_user.role != UserRole.ADMIN:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only")
-    return await get_default_limits(db)
+    return await get_limits_config(db)
 
 
 @router.put("/settings/limits", response_model=DefaultLimitsResponse)
@@ -309,3 +311,128 @@ async def update_limit_config(
     result = await apply_limits_update(db, body.model_dump(exclude_unset=True))
     await log_action(db, "limits_settings_updated", user_id=current_user.id, details="Default limits updated")
     return result
+
+
+@router.get("/users/{user_id}/limits", response_model=UserLimitsResponse)
+async def get_user_limits_config(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Admin view of one user's limit state plus current-period usage."""
+    if current_user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only")
+    user = await get_user_by_id(db, user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    view = await usage_view_for_user(db, user)
+    return UserLimitsResponse(
+        user_id=user.id,
+        limits_exempt=bool(user.limits_exempt),
+        custom_monthly_token_limit=user.custom_monthly_token_limit,
+        unlimited=bool(user.unlimited),
+        effective_token_limit=view["effective_token_limit"],
+        has_token_limit=view["has_token_limit"],
+        tokens_used=view["tokens_used_month"],
+        tokens_remaining=view["tokens_remaining"],
+        used_percent=view["used_percent"],
+        monthly_message_limit=user.monthly_message_limit,
+        messages_used=view["messages_used_month"],
+    )
+
+
+@router.get("/usage/summary")
+async def get_usage_summary(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Per-user quota summary for the current period (admin statistics)."""
+    if current_user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only")
+
+    period = CURRENT_PERIOD()
+    result = await db.execute(
+        select(
+            User.id, User.username, User.display_name, User.role,
+            User.limits_exempt, User.unlimited, User.custom_monthly_token_limit,
+            Usage.tokens_used, Usage.messages_used,
+        )
+        .join(Usage, Usage.user_id == User.id)
+        .where(Usage.period == period)
+        .order_by(Usage.tokens_used.desc())
+    )
+    rows = result.all()
+
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_counts = {}
+    today_result = await db.execute(
+        select(
+            UsageEvent.user_id,
+            func.sum(UsageEvent.tokens),
+            func.count(UsageEvent.id),
+        )
+        .where(UsageEvent.created_at >= today_start, UsageEvent.period == period)
+        .group_by(UsageEvent.user_id)
+    )
+    for user_id, event_tokens, event_count in today_result.all():
+        today_counts[user_id] = {"tokens_today": event_tokens or 0, "actions_today": event_count or 0}
+
+    action_counts = {}
+    action_result = await db.execute(
+        select(UsageEvent.user_id, UsageEvent.action_type, func.count(UsageEvent.id))
+        .where(UsageEvent.period == period)
+        .group_by(UsageEvent.user_id, UsageEvent.action_type)
+    )
+    for user_id, action_type, count in action_result.all():
+        action_counts.setdefault(user_id, {})[action_type] = count
+
+    defaults = await get_limits_config(db)
+    default_token_limit = defaults["default_token_limit"]
+
+    users = []
+    for (
+        uid, username, display_name, role, exempt, unlimited, custom, tokens_used, messages_used
+    ) in rows:
+        if unlimited:
+            effective = None
+        elif exempt:
+            effective = custom
+        else:
+            effective = default_token_limit
+        has_limit = effective is not None
+        remaining = max(effective - tokens_used, 0) if has_limit else None
+        users.append({
+            "user_id": uid,
+            "username": username,
+            "display_name": display_name,
+            "role": role.value.lower() if isinstance(role, UserRole) else str(role).lower(),
+            "limit": effective,
+            "unlimited": bool(unlimited),
+            "has_limit": has_limit,
+            "used": tokens_used,
+            "messages": messages_used,
+            "remaining": remaining,
+            "used_percent": round(tokens_used / effective * 100) if has_limit and effective > 0 else (100 if has_limit and tokens_used else None),
+            **today_counts.get(uid, {"tokens_today": 0, "actions_today": 0}),
+            "actions": action_counts.get(uid, {}),
+        })
+
+    total_tokens = (await db.execute(
+        select(func.coalesce(func.sum(Usage.tokens_used), 0)).where(Usage.period == period)
+    )).scalar()
+    total_messages = (await db.execute(
+        select(func.coalesce(func.sum(Usage.messages_used), 0)).where(Usage.period == period)
+    )).scalar()
+    total_actions = (await db.execute(
+        select(func.count(UsageEvent.id)).where(UsageEvent.period == period)
+    )).scalar()
+
+    return {
+        "period": period,
+        "users": users,
+        "total_tokens_used": total_tokens,
+        "total_messages": total_messages,
+        "total_actions": total_actions,
+        "default_token_limit": default_token_limit,
+    }

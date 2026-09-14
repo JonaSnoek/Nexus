@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 
 
@@ -44,8 +44,12 @@ class SsoSettingsUpdate(BaseModel):
 class DefaultLimitsResponse(BaseModel):
     default_token_limit: int
     default_message_limit: int
+    chat_message_cost: int
+    image_generation_cost: int
 
 
 class DefaultLimitsUpdate(BaseModel):
-    default_token_limit: Optional[int] = None
-    default_message_limit: Optional[int] = None
+    default_token_limit: Optional[int] = Field(None, ge=0)
+    default_message_limit: Optional[int] = Field(None, ge=0)
+    chat_message_cost: Optional[int] = Field(None, ge=0)
+    image_generation_cost: Optional[int] = Field(None, ge=0)

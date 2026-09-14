@@ -115,12 +115,20 @@ async def test_update_limits(client, admin_headers, regular_user):
     response = await client.put(
         f"/api/users/{regular_user.id}/limits",
         headers=admin_headers,
-        json={"monthly_token_limit": 2000, "monthly_message_limit": 25},
+        json={
+            "limits_exempt": True,
+            "custom_monthly_token_limit": 2000,
+            "unlimited": False,
+            "monthly_message_limit": 25,
+        },
     )
     assert response.status_code == 200
 
     detail = await client.get(f"/api/users/{regular_user.id}", headers=admin_headers)
     assert detail.status_code == 200
     data = detail.json()
-    assert data["monthly_token_limit"] == 2000
+    assert data["limits_exempt"] is True
+    assert data["custom_monthly_token_limit"] == 2000
+    assert data["unlimited"] is False
+    assert data["effective_token_limit"] == 2000
     assert data["monthly_message_limit"] == 25

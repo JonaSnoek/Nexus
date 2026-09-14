@@ -21,8 +21,10 @@ const emptySso: SsoSettings = {
 export default function SettingsSection() {
   const [sso, setSso] = useState<SsoSettings>(emptySso);
   const [limits, setLimits] = useState<DefaultLimits>({
-    default_token_limit: 100000,
+    default_token_limit: 100,
     default_message_limit: 1000,
+    chat_message_cost: 1,
+    image_generation_cost: 10,
   });
   const [loading, setLoading] = useState(true);
   const [ssoSaving, setSsoSaving] = useState(false);
@@ -267,11 +269,13 @@ export default function SettingsSection() {
             </div>
             <div>
               <h3 className="text-sm font-medium text-gray-100">
-                Default limits for new users
+                Limits &amp; Verbrauch
               </h3>
               <p className="text-xs text-gray-500">
-                Applied when a user is created without explicit limits.
-                Limits are per calendar month.
+                Globale Standardwerte für neue Benutzer (Standard-Limit). Die
+                Aktionskosten bestimmen, wie viele Token vom monatlichen
+                Kontingent pro Aktion abgezogen werden. Limits gelten pro
+                Kalendermonat.
               </p>
             </div>
           </div>
@@ -279,7 +283,7 @@ export default function SettingsSection() {
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
               <label className="mb-1 block text-xs text-gray-400">
-                Token limit / month
+                Token limit / month (Standard)
               </label>
               <input
                 type="number"
@@ -311,7 +315,49 @@ export default function SettingsSection() {
                 className={inputClass}
               />
             </div>
+            <div>
+              <label className="mb-1 block text-xs text-gray-400">
+                Token-Verbrauch pro Chat-Nachricht
+              </label>
+              <input
+                type="number"
+                min={0}
+                step={1}
+                value={limits.chat_message_cost}
+                onChange={(e) =>
+                  setLimits((p) => ({
+                    ...p,
+                    chat_message_cost: Number(e.target.value),
+                  }))
+                }
+                className={inputClass}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-gray-400">
+                Token-Verbrauch pro Bildgenerierung
+              </label>
+              <input
+                type="number"
+                min={0}
+                step={1}
+                value={limits.image_generation_cost}
+                onChange={(e) =>
+                  setLimits((p) => ({
+                    ...p,
+                    image_generation_cost: Number(e.target.value),
+                  }))
+                }
+                className={inputClass}
+              />
+            </div>
           </div>
+
+          <p className="mt-3 text-[11px] text-gray-500">
+            Beispiel: bei 100 Tokens Kontingent und 1 Token pro Nachricht sind
+            100 Nachrichten im Monat möglich; eine Bildgenerierung kostet
+            standardmäßig 10 Tokens.
+          </p>
 
           <div className="mt-5 flex justify-end">
             <button

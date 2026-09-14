@@ -40,6 +40,15 @@ export default function ProfilePage() {
     return Math.min(100, (usage.messages_used / usage.message_limit) * 100);
   }
 
+  const tokenLimitLabel =
+    user?.unlimited != null && user.unlimited
+      ? "∞ Unbegrenzt"
+      : formatNumber((user?.effective_token_limit ?? user?.monthly_token_limit) || 0);
+  const tokensRemainingLabel =
+    user?.unlimited != null && user.unlimited
+      ? "∞ Unbegrenzt"
+      : formatNumber((user?.tokens_remaining ?? user?.tokens_remaining_month) || 0);
+
   return (
     <Layout>
       <div className="flex-1 overflow-y-auto">
@@ -71,9 +80,7 @@ export default function ProfilePage() {
               </div>
               <div>
                 <p className="text-xs text-gray-500">Token Limit (monthly)</p>
-                <p className="text-sm text-gray-300">
-                  {formatNumber(user?.monthly_token_limit || 0)}
-                </p>
+                <p className="text-sm text-gray-300">{tokenLimitLabel}</p>
               </div>
               <div>
                 <p className="text-xs text-gray-500">Message Limit (monthly)</p>
@@ -84,7 +91,7 @@ export default function ProfilePage() {
               <div>
                 <p className="text-xs text-gray-500">Tokens remaining</p>
                 <p className="text-sm font-medium text-gray-300">
-                  {formatNumber(user?.tokens_remaining_month || 0)}
+                  {tokensRemainingLabel}
                 </p>
               </div>
               <div>
@@ -118,17 +125,25 @@ export default function ProfilePage() {
                       <Zap size={14} className="text-blue-500" />
                       Tokens
                     </div>
-                    <span className="text-xs text-gray-500">
-                      {formatNumber(usage.tokens_used)} /{" "}
-                      {formatNumber(usage.token_limit || 0)}
-                    </span>
+                    {usage.token_limit === -1 ? (
+                      <span className="text-xs text-emerald-400">
+                        ∞ Unbegrenzt · {formatNumber(usage.tokens_used)} verbraucht
+                      </span>
+                    ) : (
+                      <span className="text-xs text-gray-500">
+                        {formatNumber(usage.tokens_used)} /{" "}
+                        {formatNumber(usage.token_limit || 0)}
+                      </span>
+                    )}
                   </div>
-                  <div className="h-2 overflow-hidden rounded-full bg-nexus-elevated">
-                    <div
-                      className="h-full rounded-full bg-blue-500 transition-all"
-                      style={{ width: `${getTokenPercent()}%` }}
-                    />
-                  </div>
+                  {usage.token_limit !== -1 && (
+                    <div className="h-2 overflow-hidden rounded-full bg-nexus-elevated">
+                      <div
+                        className="h-full rounded-full bg-blue-500 transition-all"
+                        style={{ width: `${getTokenPercent()}%` }}
+                      />
+                    </div>
+                  )}
                 </div>
 
                 {/* Message usage */}

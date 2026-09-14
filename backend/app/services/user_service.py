@@ -1,12 +1,39 @@
+import json
 from datetime import datetime, timezone
-from typing import Optional, List
-from sqlalchemy import select, func
+from typing import Optional, List, Dict
+from sqlalchemy import select, func, insert as generic_insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import get_password_hash
-from app.models.user import User, UserPermission, Permission, Usage
+from app.models.user import User, UserPermission, Permission, Usage, UsageEvent
 from app.services.settings_service import get_default_limits
 
 CURRENT_PERIOD = lambda: datetime.now(timezone.utc).strftime("%Y-%m")
+
+
+class LimitExceededError(Exception):
+    """Raised when a charge would exceed the user's effective monthly quota."""
+
+    def __init__(
+        self,
+        action_type: str,
+        cost: int,
+        limit: Optional[int] = None,
+        used: int = 0,
+    ):
+        super().__init__(f"Limit exceeded for {action_type}")
+        self.action_type = action_type
+        self.cost = cost
+        self.limit = limit
+        self.used = used
+
+    @property
+    def remaining(self) -> Optional[int]:
+        if self.limit is None:
+            return None
+        return max(self.limit - self.used, 0)
 
 
 async def get_user_by_username(db: AsyncSession, username: str) -> Optional[User]:
@@ -90,9 +117,115 @@ async def get_or_create_usage(db: AsyncSession, user_id: int, period: Optional[s
     return usage
 
 
+# ---------------------------------------------------------------------------
+# Effective per-user token limit
+# ---------------------------------------------------------------------------
+
+async def get_effective_token_limit(
+    db: AsyncSession,
+    user: User,
+    default_token_limit: Optional[int] = None,
+) -> Optional[int]:
+    """Return the token quota the user must respect, or None when unlimited.
+
+    Three states (see also the admin UI "Nutzung & Limits"):
+      A. standard default: user uses the global default_token_limit.
+      B. custom limit:     limits_exempt + custom_monthly_token_limit.
+      C. unlimited:        limits_exempt + unlimited -> never blocked.
+    """
+    if user.unlimited:
+        return None
+    if user.limits_exempt:
+        if user.custom_monthly_token_limit is not None:
+            return user.custom_monthly_token_limit
+        # Exempt without a custom value is a broken half-configuration;
+        # never treat it as unlimited - fall back to the global default.
+    if default_token_limit is None:
+        defaults = await get_default_limits(db)
+        default_token_limit = defaults["default_token_limit"]
+    return default_token_limit
+
+
+# ---------------------------------------------------------------------------
+# Atomic charge (check + book)
+# ---------------------------------------------------------------------------
+
+async def spend_user_usage(
+    db: AsyncSession,
+    user: User,
+    action_type: str,
+    tokens: int,
+    metadata: Optional[dict] = None,
+) -> UsageEvent:
+    """Charge the user's monthly quota for an action.
+
+    The check and the booking happen in a single atomic UPSERT guarded by a
+    ``tokens_used + tokens <= limit`` WHERE clause, so parallel requests can
+    never jointly overspend the quota (race condition safe).
+
+    Unlimited users are never blocked; the charge is still recorded for
+    statistics/transparency.
+
+    Raises ``LimitExceededError`` when the remaining quota is insufficient.
+    """
+    period = CURRENT_PERIOD()
+    limit = await get_effective_token_limit(db, user)
+
+    # No existing usage row for this period -> the counter is zero.
+    if limit is not None and tokens > limit:
+        raise LimitExceededError(action_type, tokens, limit=limit, used=0)
+
+    usage_table = Usage.__table__
+    guard = (usage_table.c.tokens_used + tokens <= limit) if limit is not None else None
+    dialect = db.bind.dialect.name if getattr(db, "bind", None) is not None else "sqlite"
+    insert_fn = pg_insert if dialect == "postgresql" else sqlite_insert
+    stmt = (
+        insert_fn(usage_table)
+        .values(user_id=user.id, period=period, tokens_used=tokens, messages_used=0)
+        .on_conflict_do_update(
+            index_elements=["user_id", "period"],
+            set_={"tokens_used": usage_table.c.tokens_used + tokens},
+            where=guard,
+        )
+    )
+    result = await db.execute(stmt)
+    if result.rowcount != 1:
+        # The guard rejected the upsert (quota exhausted). Refresh the counter
+        # for an accurate error payload.
+        usage_row = (
+            await db.execute(
+                select(Usage).where(Usage.user_id == user.id, Usage.period == period)
+            )
+        ).scalar_one_or_none()
+        used = usage_row.tokens_used if usage_row else 0
+        raise LimitExceededError(action_type, tokens, limit=limit, used=used)
+
+    event = UsageEvent(
+        user_id=user.id,
+        action_type=action_type,
+        tokens=tokens,
+        period=period,
+        details=json.dumps(metadata) if metadata else None,
+    )
+    db.add(event)
+
+    try:
+        await db.commit()
+    except IntegrityError:
+        # Extremely unlikely: a competing first-spend inserted a usage row.
+        # The UPSERT above already serializes this, so treat as a failure.
+        await db.rollback()
+        raise
+    return event
+
+
 async def check_token_limit(db: AsyncSession, user: User) -> bool:
+    """Backward-compatible helper: True when the quota allows another charge."""
+    limit = await get_effective_token_limit(db, user)
+    if limit is None:
+        return True
     usage = await get_or_create_usage(db, user.id)
-    return usage.tokens_used < user.monthly_token_limit
+    return usage.tokens_used < limit
 
 
 async def check_message_limit(db: AsyncSession, user: User) -> bool:
@@ -109,14 +242,87 @@ async def increment_usage(db: AsyncSession, user_id: int, tokens: int = 0, messa
     return usage
 
 
-async def get_monthly_summary(db: AsyncSession, user: User) -> dict:
-    usage = await get_or_create_usage(db, user.id)
+# ---------------------------------------------------------------------------
+# Usage views (shared by /me, user list, admin limits)
+# ---------------------------------------------------------------------------
+
+async def usage_view_for_user(
+    db: AsyncSession,
+    user: User,
+    default_token_limit: Optional[int] = None,
+    usage: Optional[Usage] = None,
+) -> dict:
+    """Assemble the usage/limit view for a single user without side effects."""
+    if default_token_limit is None:
+        defaults = await get_default_limits(db)
+        default_token_limit = defaults["default_token_limit"]
+
+    if usage is None:
+        period = CURRENT_PERIOD()
+        result = await db.execute(
+            select(Usage).where(Usage.user_id == user.id, Usage.period == period)
+        )
+        usage = result.scalar_one_or_none()
+
+    period = usage.period if usage else CURRENT_PERIOD()
+    used = usage.tokens_used if usage else 0
+    messages_used = usage.messages_used if usage else 0
+    effective_limit = await get_effective_token_limit(db, user, default_token_limit)
+
+    has_limit = effective_limit is not None
+    if has_limit:
+        remaining = max(effective_limit - used, 0)
+        percent = round(used / effective_limit * 100) if effective_limit > 0 else (100 if used else 0)
+    else:
+        remaining = None
+        percent = None
+
     return {
-        "period": usage.period,
-        "tokens_used_month": usage.tokens_used,
-        "messages_used_month": usage.messages_used,
-        "monthly_token_limit": user.monthly_token_limit,
+        "period": period,
+        "tokens_used_month": used,
+        "messages_used_month": messages_used,
+        # Compat fields (existing UI/API consumers):
+        "monthly_token_limit": effective_limit if has_limit else user.monthly_token_limit,
         "monthly_message_limit": user.monthly_message_limit,
-        "tokens_remaining_month": max(user.monthly_token_limit - usage.tokens_used, 0),
-        "messages_remaining_month": max(user.monthly_message_limit - usage.messages_used, 0),
+        "tokens_remaining_month": remaining,
+        "messages_remaining_month": max(user.monthly_message_limit - messages_used, 0),
+        # New engineered fields:
+        "limits_exempt": bool(user.limits_exempt),
+        "custom_monthly_token_limit": user.custom_monthly_token_limit,
+        "unlimited": bool(user.unlimited),
+        "has_token_limit": has_limit,
+        "effective_token_limit": effective_limit,
+        "tokens_remaining": remaining,
+        "used_percent": percent,
     }
+
+
+async def usage_views_for_users(
+    db: AsyncSession,
+    users: List[User],
+) -> Dict[int, dict]:
+    """Batch usage view for a list of users (no row creation, no commits)."""
+    if not users:
+        return {}
+    defaults = await get_default_limits(db)
+    default_token_limit = defaults["default_token_limit"]
+    period = CURRENT_PERIOD()
+
+    ids = [u.id for u in users]
+    result = await db.execute(
+        select(Usage).where(Usage.user_id.in_(ids), Usage.period == period)
+    )
+    usage_map = {row.user_id: row for row in result.scalars().all()}
+
+    views = {}
+    for user in users:
+        views[user.id] = await usage_view_for_user(
+            db, user, default_token_limit, usage_map.get(user.id)
+        )
+    return views
+
+
+async def get_monthly_summary(db: AsyncSession, user: User) -> dict:
+    """Legacy wrapper: ensures a usage row exists and returns the full view."""
+    usage = await get_or_create_usage(db, user.id)
+    return await usage_view_for_user(db, user, usage=usage)

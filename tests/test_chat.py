@@ -119,7 +119,8 @@ async def test_send_message_to_nonexistent_chat(client, user_headers):
 async def test_token_limit_enforced(client, user_headers, db_session):
     chat_id = await _create_chat(client, user_headers, "Token Limits")
     user = await get_user_by_username(db_session, "user1")
-    user.monthly_token_limit = 0
+    user.limits_exempt = True
+    user.custom_monthly_token_limit = 0
     await db_session.commit()
 
     response = await client.post(
@@ -128,7 +129,18 @@ async def test_token_limit_enforced(client, user_headers, db_session):
         json={"content": "hello"},
     )
     assert response.status_code == 429
-    assert "token limit" in response.json()["detail"]
+    assert response.json()["detail"]["error_code"] == "LIMIT_REACHED"
+    assert response.json()["detail"]["monthly_limit"] == 0
+    assert response.json()["detail"]["used"] == 0
+
+    # The quota is never bypassed through the chat API: even a non-standard
+    # client gets the same enforced response.
+    blocked_again = await client.post(
+        f"/api/chat/{chat_id}/messages",
+        headers=user_headers,
+        json={"content": "still blocked"},
+    )
+    assert blocked_again.status_code == 429
 
 
 async def test_message_limit_enforced(client, user_headers, db_session):

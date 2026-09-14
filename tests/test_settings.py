@@ -12,8 +12,12 @@ async def test_default_limits_endpoint(client, admin_headers):
     data = response.json()
     assert "default_token_limit" in data
     assert "default_message_limit" in data
-    assert data["default_token_limit"] == 100000
+    assert "chat_message_cost" in data
+    assert "image_generation_cost" in data
+    assert data["default_token_limit"] == 100
     assert data["default_message_limit"] == 1000
+    assert data["chat_message_cost"] == 1
+    assert data["image_generation_cost"] == 10
 
 
 async def test_update_default_limits(client, admin_headers, db_session):

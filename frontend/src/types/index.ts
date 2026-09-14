@@ -13,9 +13,75 @@ export interface User {
   messages_used_month: number;
   tokens_remaining_month: number;
   messages_remaining_month: number;
+  limits_exempt?: boolean;
+  custom_monthly_token_limit?: number | null;
+  unlimited?: boolean;
+  has_token_limit?: boolean;
+  effective_token_limit?: number | null;
+  tokens_remaining?: number | null;
+  used_percent?: number | null;
   permissions: string[];
   created_at?: string;
   last_login?: string | null;
+}
+
+export interface UserLimits {
+  user_id: string | number;
+  limits_exempt: boolean;
+  custom_monthly_token_limit: number | null;
+  unlimited: boolean;
+  effective_token_limit: number | null;
+  has_token_limit: boolean;
+  tokens_used: number;
+  tokens_remaining: number | null;
+  used_percent: number | null;
+  monthly_message_limit: number;
+  messages_used: number;
+}
+
+export interface UsageEvent {
+  id: string | number;
+  action_type: string;
+  tokens: number;
+  period: string;
+  created_at: string;
+  metadata?: string | null;
+}
+
+export interface UsageSummaryUser {
+  user_id: string | number;
+  username: string;
+  display_name: string | null;
+  role: string;
+  limit: number | null;
+  unlimited: boolean;
+  has_limit: boolean;
+  used: number;
+  messages: number;
+  remaining: number | null;
+  used_percent: number | null;
+  tokens_today: number;
+  actions_today: number;
+  actions: Record<string, number>;
+}
+
+export interface UsageSummary {
+  period: string;
+  users: UsageSummaryUser[];
+  total_tokens_used: number;
+  total_messages: number;
+  total_actions: number;
+  default_token_limit: number;
+}
+
+export interface LimitErrorDetail {
+  error_code?: string;
+  action_type?: string;
+  cost?: number;
+  monthly_limit?: number | null;
+  used?: number;
+  remaining?: number;
+  message?: string;
 }
 
 export interface Permission {
@@ -130,6 +196,16 @@ export interface SsoSettings {
 export interface DefaultLimits {
   default_token_limit: number;
   default_message_limit: number;
+  chat_message_cost: number;
+  image_generation_cost: number;
+}
+
+export interface UpdateLimitsRequest {
+  limits_exempt?: boolean;
+  custom_monthly_token_limit?: number | null;
+  unlimited?: boolean;
+  monthly_token_limit?: number;
+  monthly_message_limit?: number;
 }
 
 export interface DashboardStats {

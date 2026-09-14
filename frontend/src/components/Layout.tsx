@@ -191,37 +191,55 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 </span>
                 <span className="text-xs text-gray-400">monthly</span>
               </div>
-              <div className="flex items-end justify-between">
-                <span className="text-sm font-semibold text-gray-100">
-                  {user.tokens_remaining_month.toLocaleString()}
-                </span>
-                <span className="text-[10px] text-gray-500">
-                  of {user.monthly_token_limit.toLocaleString()} left
-                </span>
-              </div>
-              <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-nexus-surface">
-                <div
-                  className={`h-full rounded-full transition-all ${
-                    user.tokens_remaining_month <= 0
-                      ? "bg-red-500"
-                      : user.tokens_remaining_month <
-                          user.monthly_token_limit * 0.2
-                        ? "bg-yellow-500"
-                        : "bg-blue-500"
-                  }`}
-                  style={{
-                    width: `${
-                      user.monthly_token_limit > 0
-                        ? Math.min(
-                            100,
-                            (user.tokens_used_month / user.monthly_token_limit) *
-                              100
-                          )
-                        : 100
-                    }%`,
-                  }}
-                />
-              </div>
+
+              {user.unlimited ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-semibold text-emerald-400">∞ Unbegrenzt</span>
+                  {user.tokens_used_month > 0 && (
+                    <span className="text-[10px] text-gray-500">
+                      {user.tokens_used_month.toLocaleString()} verbraucht
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <>
+                  <div className="flex items-end justify-between">
+                    <span className="text-sm font-semibold text-gray-100">
+                      {(user.tokens_remaining ?? user.tokens_remaining_month).toLocaleString()}
+                    </span>
+                    <span className="text-[10px] text-gray-500">
+                      of{" "}
+                      {(user.effective_token_limit ?? user.monthly_token_limit).toLocaleString()}{" "}
+                      left
+                    </span>
+                  </div>
+                  <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-nexus-surface">
+                    <div
+                      className={`h-full rounded-full transition-all ${
+                        (user.tokens_remaining ?? user.tokens_remaining_month) <= 0
+                          ? "bg-red-500"
+                          : (user.tokens_remaining ?? user.tokens_remaining_month) <
+                            (user.effective_token_limit ?? user.monthly_token_limit) * 0.2
+                            ? "bg-yellow-500"
+                            : "bg-blue-500"
+                      }`}
+                      style={{
+                        width: `${
+                          (user.effective_token_limit ?? user.monthly_token_limit) > 0
+                            ? Math.min(
+                                100,
+                                (user.tokens_used_month /
+                                  (user.effective_token_limit ?? user.monthly_token_limit)) *
+                                  100
+                              )
+                            : 100
+                        }%`,
+                      }}
+                    />
+                  </div>
+                </>
+              )}
+
               <div className="mt-1.5 flex items-center justify-between text-[10px] text-gray-500">
                 <span>
                   {user.messages_remaining_month.toLocaleString()} of{" "}

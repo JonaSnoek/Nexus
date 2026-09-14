@@ -18,7 +18,7 @@ NEXUS is a modern, self-hosted AI assistant platform designed to run entirely on
 - **User management with roles and permissions** — create users, assign granular permissions, activate/deactivate accounts, and inspect per-user usage.
 - **SSO via OpenID Connect (OIDC)** — drop-in integration with self-hosted identity providers such as [Authentik](https://goauthentik.io/), Keycloak, and any OIDC-compatible provider.
 - **Admin dashboard with system monitoring** — live counts of users, chats, messages, and token usage, plus CPU/memory/disk/uptime reporting and Ollama model management.
-- **Token and message limits per user** — daily quotas enforced at the API layer prevent resource exhaustion and keep your LLM responsive.
+- **Quota & limits system (per month)** — drei Zustände pro Benutzer (Standardlimit / benutzerdefiniert / unbegrenzt), serverseitig atomar durchgesetzt (race-condition-sicher). Pro Aktion (Chat-Nachricht, Bildgenerierung) wird ein konfigurierbarer Token-Verbrauch vom Kontingent abgezogen; ein transparenter Usage-Ledger zeichnet jeden Verbrauch auf.
 - **Audit logging** — every sensitive action (logins, user creation, permission changes, chat deletion) is recorded with actor, IP, and timestamp.
 - **Responsive dark-themed UI** — a fast, keyboard-friendly React frontend styled for long chat sessions.
 - **Docker-based deployment** — every service ships as a container; one `docker compose up` brings the whole stack online.
@@ -340,6 +340,42 @@ When a user authenticates with SSO for the first time, NEXUS looks them up by th
 
 ---
 
+## Quota & Limits
+
+NEXUS erfasst pro Benutzer ein **monatliches Token-Kontingent** und ein **monatliches Nachrichten-Limit**. Ein Token ist das interne NEXUS-Kontingent (unabhängig von den Provider-Token-Zählern von Ollama, die zusätzlich als Metadaten gespeichert werden).
+
+### Die drei Zustände pro Benutzer
+
+| Zustand | Konfiguration | Effekt |
+|---------|---------------|--------|
+| **Standard** | `limits_exempt=false` | Benutzer nutzt das globale Standard-Limit aus den Einstellungen. |
+| **Benutzerdefiniert** | `limits_exempt=true` + `custom_monthly_token_limit` | Benutzer erhält ein festes eigenes Kontingent. |
+| **Unbegrenzt** | `limits_exempt=true` + `unlimited=true` | Benutzer wird nie blockiert; der Verbrauch wird trotzdem erfasst (Statistik/Transparenz). |
+
+Ungültige Kombinationen werden serverseitig normalisiert (z. B. wird `unlimited=true` automatisch mit `custom_monthly_token_limit=null` verknüpft). Das Frontend entscheidet **nie** über die Zugriffslogik – die Durchsetzung geschieht ausschließlich im Backend.
+
+### Token-Verbrauch pro Aktion
+
+| Einstellung | Standard | Beschreibung |
+|-------------|----------|--------------|
+| `default_token_limit` | `100` | Globales Standard-Kontingent pro Monat (für Neuinstallationen). |
+| `default_message_limit` | `1000` | Globales Nachrichten-Limit pro Monat. |
+| `chat_message_cost` | `1` | Tokens, die jede Chat-Nachricht vom Kontingent abzieht. |
+| `image_generation_cost` | `10` | Tokens, die eine Bildgenerierung vom Kontingent abzieht. |
+
+> **Wichtig:** Bestehende Datenbanken behalten ihre eingetragenen Werte. Der neue Standard (`100`) gilt nur, wenn kein Eintrag existiert. Die Kosten werden pro Aktion **atomar** gebucht (ein einzelner UPSERT mit Guard) – parallele Anfragen können das Kontingent nie gemeinsam überschreiten. Bei erschöpfendem Kontingent antwortet die API mit `429` und `detail.error_code="LIMIT_REACHED"`.
+
+**Speicherung:** Chats und Nachrichten werden **dauerhaft** pro Benutzer in PostgreSQL gespeichert (zugeordnet über die `user_id` des Chats). Es gibt keine automatische Löschung oder Ablaufzeit – gelöscht wird nur, wenn ein Benutzer einen Chat/eine Nachricht explizit über die UI oder API entfernt.
+
+### Verbrauch-Seite (Admin)
+
+- **Benutzerliste & Limits bearbeiten:** Admin → Users. Drei Zustände als Umschalter, individuelle Kontingente und Nachrichtenlimits pro Benutzer.
+- **`GET /api/admin/usage/summary`** liefert pro Benutzer Limit, Verbrauch, Rest, Verbrauch heute, Aktionen und Gesamtsummen des aktuellen Monats.
+- **`GET /api/admin/users/{id}/limits`** gibt den vollständigen Limit-Zustand eines Benutzers zurück.
+- **`GET /api/users/{id}/usage/events`** liefert den lückenlosen Usage-Ledger (jede Buchung mit Aktion, Tokens und Zeitstempel).
+
+---
+
 ## LLM Configuration
 
 NEXUS talks to Ollama, which pulls and runs open-weight models locally. The model is chosen with the `NEXUS_LLM_MODEL` environment variable.
@@ -633,8 +669,9 @@ curl -N -X POST http://localhost/api/chat/1/messages \
 | `PUT` | `/api/users/{id}` | Update a user (name, email, role, active) |
 | `DELETE` | `/api/users/{id}` | Deactivate a user |
 | `PUT` | `/api/users/{id}/permissions` | Replace a user's permission set |
-| `PUT` | `/api/users/{id}/limits` | Set daily token/message limits |
+| `PUT` | `/api/users/{id}/limits` | Set a user's quota (standard / custom / unlimited) |
 | `GET` | `/api/users/{id}/usage` | Last 30 days of usage for a user |
+| `GET` | `/api/users/{id}/usage/events` | Usage ledger entries for a user (admin or the user themself) |
 
 ### Permissions
 
@@ -653,6 +690,10 @@ curl -N -X POST http://localhost/api/chat/1/messages \
 | `GET` | `/api/admin/models` | Installed Ollama models |
 | `POST` | `/api/admin/models/pull` | Pull a model into Ollama |
 | `GET` | `/api/admin/models/status` | Ollama health + default model presence |
+| `GET` | `/api/admin/settings/limits` | Default limits and action costs (token/message limit, chat/image cost) |
+| `PUT` | `/api/admin/settings/limits` | Update the default limits and action costs |
+| `GET` | `/api/admin/users/{id}/limits` | Limit state + current-period usage for one user |
+| `GET` | `/api/admin/usage/summary` | Per-user quota summary for the current month |
 
 ### Health
 
@@ -777,6 +818,7 @@ Test coverage by file:
 | `tests/test_auth.py` | Login, setup, `/me`, token expiry |
 | `tests/test_users.py` | CRUD, permissions, limits, deactivation |
 | `tests/test_chat.py` | Chat CRUD, streaming messages, quota enforcement |
+| `tests/test_limits.py` | Three-state quota system, atomic charges, race conditions, month switch, permissions |
 | `tests/test_permissions.py` | Permission checks and listing |
 | `tests/test_health.py` | Health endpoint, setup status |
 | `tests/test_admin.py` | Dashboard, audit logs, system info |
@@ -896,7 +938,7 @@ NEXUS is designed for self-hosting with security in mind:
 - **Password storage** — bcrypt hashing via `passlib`; plaintext passwords are never stored or logged.
 - **JWT authentication** — stateless bearer tokens signed with `HS256` using a server-side `SECRET_KEY`; tokens expire after `ACCESS_TOKEN_EXPIRE_MINUTES` (default 60 minutes).
 - **Role-based access control** — admin endpoints (users, permissions, logs, system info) reject non-admin callers with `403`, and chats are scoped per user so one user can never read another's data.
-- **Per-user quotas** — daily token and message limits prevent a single (possibly compromised) account from exhausting the server.
+- **Per-user quotas** — monthly token and message limits (standard / custom / unlimited per user) enforced atomically in the backend; even unlimited accounts keep reporting their usage.
 - **Audit logging** — logins, user creation, permission changes, chat deletions, and OIDC logins are recorded with actor, IP, and timestamp for post-incident review.
 - **SSO-ready** — OIDC integration lets you centralize identity with Authentik/Keycloak instead of managing passwords in NEXUS.
 - **TLS by default** — Caddy terminates HTTPS with automatic certificates, so traffic to the browser is encrypted.
